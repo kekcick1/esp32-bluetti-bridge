@@ -25,7 +25,8 @@ BluettiDevice::BluettiDevice(SystemStatus *sharedStatus)
       status(sharedStatus), cachedBattery(0), cachedAcPower(0),
       cachedDcPower(0), cachedInputPower(0), cachedAcState(false),
       cachedDcState(false), connecting(false), connectStartTime(0),
-      connectAttempts(0), scanning(false), scanStartTime(0), scanner(nullptr) {
+      connectAttempts(0), scanning(false), scanStartTime(0), scanner(nullptr),
+      updateInterval(20000) { // За замовчуванням 20 секунд
   instance = this;
 }
 
@@ -463,8 +464,9 @@ bool BluettiDevice::setupCharacteristics() {
   }
   yield();
 
-  // Встановлюємо lastRequest = 0, щоб перший запит відбувся в loop()
-  lastRequest = 0;
+  // Відправляємо перший запит ВІДРАЗУ після підключення
+  Serial.println("[Bluetti] Sending initial status request...");
+  requestStatus();
   
   Serial.println("[Bluetti] Setup complete - status will be requested in loop()");
   return true;
@@ -549,8 +551,8 @@ void BluettiDevice::loop() {
     }
   }
 
-  // Запитуємо статус кожні 4 секунди
-  if (millis() - lastRequest > 4000) {
+  // Запитуємо статус з налаштованим інтервалом
+  if (millis() - lastRequest > updateInterval) {
     requestStatus();
   }
   
@@ -561,8 +563,10 @@ void BluettiDevice::loop() {
     lastDataReceived = status->lastBluettiUpdate;
   }
   
-  if (connected && lastDataReceived > 0 && millis() - lastDataReceived > 10000) {
-    Serial.println("[Bluetti] WARNING: No data received for 10 seconds!");
+  // Використовуємо updateInterval + 10 секунд як таймаут
+  unsigned long timeout = updateInterval + 10000;
+  if (connected && lastDataReceived > 0 && millis() - lastDataReceived > timeout) {
+    Serial.printf("[Bluetti] WARNING: No data received for %lu seconds!\n", timeout / 1000);
     Serial.println("[Bluetti] Bluetti Bluetooth may be turned off - trying to reactivate...");
     
     // Спробуємо відправити команду активації знову
@@ -997,4 +1001,13 @@ void BluettiDevice::notificationThunk(
   Serial.print("[Bluetti] handleNotification completed\n");
   Serial.print("[Bluetti] ========================================\n");
   Serial.flush();
+}
+
+void BluettiDevice::setUpdateInterval(unsigned long intervalMs) {
+  updateInterval = intervalMs;
+  Serial.printf("[Bluetti] Update interval set to %lu ms (%lu seconds)\n", intervalMs, intervalMs/1000);
+}
+
+unsigned long BluettiDevice::getUpdateInterval() const {
+  return updateInterval;
 }

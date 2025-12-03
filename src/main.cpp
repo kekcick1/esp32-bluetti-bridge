@@ -346,6 +346,11 @@ void loadConfig() {
     strncpy(wifiPassword, WIFI_PASSWORD, sizeof(wifiPassword) - 1);
     Serial.println("Using default WiFi password");
   }
+  
+  // Завантажуємо інтервал опитування Bluetti
+  unsigned long savedInterval = prefs.getULong("update_interval", 20000); // За замовчуванням 20 секунд
+  bluetti.setUpdateInterval(savedInterval);
+  Serial.printf("Loaded Bluetti update interval: %lu ms (%lu seconds)\n", savedInterval, savedInterval/1000);
 
   prefs.end();
 }

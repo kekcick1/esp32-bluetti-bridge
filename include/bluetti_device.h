@@ -28,6 +28,10 @@ public:
     bool getACOutputState() const;
     bool getDCOutputState() const;
     int getInputPower() const;
+    
+    // Налаштування інтервалу опитування (мс)
+    void setUpdateInterval(unsigned long intervalMs);
+    unsigned long getUpdateInterval() const;
 
 private:
     NimBLEClient* client;
@@ -48,6 +52,7 @@ private:
     int cachedInputPower;
     bool cachedAcState;
     bool cachedDcState;
+    unsigned long updateInterval; // Інтервал опитування в мс (за замовчуванням 4000)
 
     bool setupCharacteristics();
     bool sendCommand(const uint8_t* data, size_t length);

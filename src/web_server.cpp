@@ -147,17 +147,19 @@ String WebServerManager::buildConfigHtml() {
     extern char bluettiMac[18];
     extern char wifiSsid[64];
     extern char wifiPassword[64];
+    extern BluettiDevice bluetti;
     
     String html;
-    html.reserve(1500);
+    html.reserve(2000);
     html += F("<!DOCTYPE html><html><head><meta charset='UTF-8'>");
     html += F("<meta name='viewport' content='width=device-width,initial-scale=1'>");
     html += F("<title>ESP32 Configuration</title>");
     html += F("<style>body{font-family:Arial;max-width:600px;margin:20px auto;padding:20px;}");
-    html += F("input[type=text],input[type=password]{width:100%;padding:8px;margin:5px 0;box-sizing:border-box;}");
+    html += F("input[type=text],input[type=password],input[type=number]{width:100%;padding:8px;margin:5px 0;box-sizing:border-box;}");
     html += F("button{background:#4CAF50;color:white;padding:10px 20px;border:none;cursor:pointer;margin:5px;}");
     html += F("button:hover{background:#45a049;} .back{background:#2196F3;}");
-    html += F("h2{font-size:16px;margin-top:20px;color:#555;border-bottom:1px solid #ddd;padding-bottom:5px;}</style></head><body>");
+    html += F("h2{font-size:16px;margin-top:20px;color:#555;border-bottom:1px solid #ddd;padding-bottom:5px;}");
+    html += F(".hint{font-size:12px;color:#777;margin-top:2px;}</style></head><body>");
     html += F("<h1>⚙️ Configuration</h1>");
     html += F("<form method='POST' action='/save_config'>");
     html += F("<h2>WiFi Settings</h2>");
@@ -179,6 +181,11 @@ String WebServerManager::buildConfigHtml() {
     html += F("<input type='text' name='bluetti_mac' value='");
     html += bluettiMac;
     html += F("' placeholder='D1:4C:11:6B:6A:3D'><br>");
+    html += F("<label>Інтервал опитування (секунди):</label>");
+    html += F("<input type='number' name='update_interval' value='");
+    html += String(bluetti.getUpdateInterval() / 1000);
+    html += F("' min='5' max='300' placeholder='20'>");
+    html += F("<div class='hint'>Рекомендовано: 20-30 сек (економить батарею)</div>");
     html += F("<button type='submit'>💾 Save</button>");
     html += F("<a href='/'><button type='button' class='back'>← Back</button></a>");
     html += F("</form></body></html>");
@@ -258,6 +265,7 @@ void WebServerManager::handleSaveConfig(AsyncWebServerRequest *request) {
     extern char bluettiMac[18];
     extern char wifiSsid[64];
     extern char wifiPassword[64];
+    extern BluettiDevice bluetti;
     
     bool changed = false;
     String newMqtt, newMac, newSsid, newPassword;
@@ -294,6 +302,20 @@ void WebServerManager::handleSaveConfig(AsyncWebServerRequest *request) {
         newMac.trim();
         if (newMac.length() > 0 && newMac != String(bluettiMac)) {
             newMac.toCharArray(bluettiMac, sizeof(bluettiMac));
+            changed = true;
+        }
+    }
+    
+    // Зберігаємо інтервал опитування
+    if (request->hasParam("update_interval", true)) {
+        int intervalSec = request->getParam("update_interval", true)->value().toInt();
+        if (intervalSec >= 5 && intervalSec <= 300) {
+            unsigned long intervalMs = intervalSec * 1000;
+            bluetti.setUpdateInterval(intervalMs);
+            Preferences prefs;
+            prefs.begin("config", false);
+            prefs.putULong("update_interval", intervalMs);
+            prefs.end();
             changed = true;
         }
     }
