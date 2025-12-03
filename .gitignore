@@ -1,0 +1,10 @@
+.pio
+.vscode
+.DS_Store
+*.pyc
+*.o
+*.bin
+*.elf
+.env
+
+include/secrets.h
