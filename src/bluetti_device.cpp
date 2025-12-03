@@ -869,15 +869,21 @@ void BluettiDevice::handleNotification(uint8_t *data, size_t length) {
   int batteryReg = -1;
   uint16_t batteryValue = 0;
   
-  // Reg@69 (offset 69): 1019 (0x03FB) -> 1019/10 = 101.9% -> обмежити до 100%
+  // Reg@69 (offset 69): Battery SOC (0-100%)
   if (length >= 71) {
     batteryValue = (data[69] << 8) | data[70];
-    if (batteryValue >= 950 && batteryValue <= 1050) { // 95.0% - 105.0%
+    if (batteryValue > 0 && batteryValue <= 100) {
+      // Прямий відсоток (75 = 75%, 99 = 99%)
       batteryReg = 69;
-      cachedBattery = batteryValue / 10; // Ділимо на 10
-      if (cachedBattery > 100) cachedBattery = 100; // Обмежуємо до 100%
-      Serial.printf("[Bluetti] ✅ Battery found at offset 69: %d (raw=%d, /10=%d%%, limited to %d%%)\n", 
-                    batteryValue, batteryValue, batteryValue/10, cachedBattery);
+      cachedBattery = batteryValue;
+      Serial.printf("[Bluetti] ✅ Battery: %d%%\n", cachedBattery);
+    } else if (batteryValue > 100) {
+      // Можливо формат ×10? (спробуємо)
+      batteryReg = 69;
+      cachedBattery = batteryValue / 10;
+      if (cachedBattery > 100) cachedBattery = 100;
+      Serial.printf("[Bluetti] ✅ Battery: %d (raw=%d, divided by 10 = %d%%)\n", 
+                    batteryValue, batteryValue, cachedBattery);
     }
   }
   
