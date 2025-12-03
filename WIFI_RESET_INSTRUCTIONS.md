@@ -178,8 +178,8 @@ nano include/secrets.h
 ### Крок 2: Змініть значення
 Знайдіть рядки:
 ```cpp
-static constexpr char WIFI_SSID[] = "Robinson WiFi";
-static constexpr char WIFI_PASSWORD[] = "0504479307qw";
+static constexpr char WIFI_SSID[] = "YOUR_WIFI_SSID";
+static constexpr char WIFI_PASSWORD[] = "YOUR_WIFI_PASSWORD";
 ```
 
 Змініть на правильні значення:
@@ -258,8 +258,8 @@ nano include/secrets.h
 ### Крок 2: Змініть значення
 Знайдіть рядки:
 ```cpp
-static constexpr char WIFI_SSID[] = "Robinson WiFi";
-static constexpr char WIFI_PASSWORD[] = "0504479307qw";
+static constexpr char WIFI_SSID[] = "YOUR_WIFI_SSID";
+static constexpr char WIFI_PASSWORD[] = "YOUR_WIFI_PASSWORD";
 ```
 
 Змініть на правильні значення:
@@ -309,7 +309,7 @@ status
 Ви побачите:
 ```
 === Current Status ===
-WiFi SSID: Robinson WiFi
+WiFi SSID: YOUR_WIFI_SSID
 WiFi Connected: No
 AP Mode: No
 Uptime: 123 seconds

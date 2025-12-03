@@ -47,8 +47,8 @@ cd ~/Documents/esp32
 
 ```cpp
 // WiFi credentials
-const char* WIFI_SSID = "Robinson WiFi";
-const char* WIFI_PASSWORD = "0504479307qw";
+const char* WIFI_SSID = "YOUR_WIFI_SSID";
+const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
 
 // MQTT settings
 const char* MQTT_SERVER = "YOUR_MQTT_SERVER_IP";  // IP адреса Home Assistant
