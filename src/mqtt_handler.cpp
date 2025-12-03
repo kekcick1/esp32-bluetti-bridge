@@ -101,77 +101,58 @@ bool MQTTHandler::ensureConnection() {
 
     // Викликаємо connect() - блокує на 1 секунду (мінімальний таймаут)
     // Під час цього кнопки не працюють, але це найкраще, що можна зробити
+    bool connected = false;
     if (!username.isEmpty()) {
-      mqttClient.connect(clientId.c_str(), username.c_str(), password.c_str());
+      connected = mqttClient.connect(clientId.c_str(), username.c_str(), password.c_str());
     } else {
-      mqttClient.connect(clientId.c_str());
+      connected = mqttClient.connect(clientId.c_str());
     }
 
     // Дозволяємо іншим задачам виконуватися (кнопки!) після connect()
     yield();
+
+    // Логуємо результат відразу
+    if (connected) {
+      Serial.println(" ✅ connected!");
+      mqttConnecting = false;
+      
+      // Підписуємося на команди від Home Assistant
+      mqttClient.subscribe("homeassistant/bluetti/eb3a/ac_output/set");
+      mqttClient.subscribe("homeassistant/bluetti/eb3a/dc_output/set");
+      Serial.println("[MQTT] ✅ Subscribed to control commands");
+      
+      yield();
+      publishDiscovery();
+      yield();
+      publishStatus();
+      yield();
+      return true;
+    } else {
+      int state = mqttClient.state();
+      Serial.printf(" ❌ failed (code: %d", state);
+      switch (state) {
+      case -4: Serial.print(" - Timeout"); break;
+      case -3: Serial.print(" - Lost"); break;
+      case -2: Serial.print(" - Failed"); break;
+      case -1: Serial.print(" - Disconnected"); break;
+      case 1: Serial.print(" - Bad protocol"); break;
+      case 2: Serial.print(" - Bad client ID"); break;
+      case 3: Serial.print(" - Unavailable"); break;
+      case 4: Serial.print(" - Bad credentials"); break;
+      case 5: Serial.print(" - Unauthorized"); break;
+      default: Serial.print(" - Unknown"); break;
+      }
+      Serial.println(")");
+    }
 
     mqttConnecting = true;
     lastMqttAttempt = millis();
     return false;
   }
 
-  // Перевіряємо статус підключення (неблокуюче)
-  if (mqttClient.connected()) {
+  // Таймаут для повторної спроби (5 секунд)
+  if (millis() - lastMqttAttempt > 5000) {
     mqttConnecting = false;
-    Serial.println(" ok");
-    
-    // Підписуємося на команди від Home Assistant для керування Bluetti
-    mqttClient.subscribe("homeassistant/bluetti/eb3a/ac_output/set");
-    mqttClient.subscribe("homeassistant/bluetti/eb3a/dc_output/set");
-    Serial.println("[MQTT] ✅ Subscribed to control commands from Home Assistant");
-    
-    yield(); // Дозволяємо кнопкам працювати
-    publishDiscovery();
-    yield(); // Дозволяємо кнопкам працювати
-    publishStatus();
-    yield(); // Дозволяємо кнопкам працювати
-    return true;
-  }
-
-  // Таймаут підключення (1 секунда)
-  if (millis() - lastMqttAttempt > 1000) {
-    mqttConnecting = false;
-    int state = mqttClient.state();
-    Serial.printf(" failed (code: %d", state);
-
-    switch (state) {
-    case -4:
-      Serial.print(" - Connection timeout");
-      break;
-    case -3:
-      Serial.print(" - Connection lost");
-      break;
-    case -2:
-      Serial.print(" - Connect failed (server unreachable)");
-      break;
-    case -1:
-      Serial.print(" - Disconnected");
-      break;
-    case 1:
-      Serial.print(" - Bad protocol version");
-      break;
-    case 2:
-      Serial.print(" - Bad client ID");
-      break;
-    case 3:
-      Serial.print(" - Server unavailable");
-      break;
-    case 4:
-      Serial.print(" - Bad credentials");
-      break;
-    case 5:
-      Serial.print(" - Unauthorized");
-      break;
-    default:
-      Serial.print(" - Unknown error");
-      break;
-    }
-    Serial.println(")");
   }
 
   return false;
