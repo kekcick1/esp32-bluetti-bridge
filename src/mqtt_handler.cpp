@@ -163,22 +163,21 @@ void MQTTHandler::publishStatus() {
     return;
   }
 
-  StaticJsonDocument<512> doc;
-  doc["battery"] = bluetti->getBatteryLevel();
-  doc["ac_power"] = bluetti->getACOutputPower();
-  doc["dc_power"] = bluetti->getDCOutputPower();
-  doc["ac_state"] = bluetti->getACOutputState();
-  doc["dc_state"] = bluetti->getDCOutputState();
-  doc["input_power"] = bluetti->getInputPower();
-
-  char payload[512];
-  size_t len = serializeJson(doc, payload);
-  mqttClient.publish("homeassistant/bluetti/eb3a/state",
-                     reinterpret_cast<const uint8_t *>(payload), len, true);
-
   char value[16];
+  
+  // Публікуємо кожне значення окремо для Home Assistant
   snprintf(value, sizeof(value), "%u", bluetti->getBatteryLevel());
   mqttClient.publish("homeassistant/bluetti/eb3a/battery", value, true);
+  
+  snprintf(value, sizeof(value), "%u", bluetti->getACOutputPower());
+  mqttClient.publish("homeassistant/bluetti/eb3a/ac_power", value, true);
+  
+  snprintf(value, sizeof(value), "%u", bluetti->getDCOutputPower());
+  mqttClient.publish("homeassistant/bluetti/eb3a/dc_power", value, true);
+  
+  snprintf(value, sizeof(value), "%u", bluetti->getInputPower());
+  mqttClient.publish("homeassistant/bluetti/eb3a/input_power", value, true);
+  
   mqttClient.publish("homeassistant/bluetti/eb3a/ac_output/state",
                      bluetti->getACOutputState() ? "ON" : "OFF", true);
   mqttClient.publish("homeassistant/bluetti/eb3a/dc_output/state",
@@ -186,49 +185,110 @@ void MQTTHandler::publishStatus() {
 }
 
 void MQTTHandler::publishDiscovery() {
-  StaticJsonDocument<512> doc;
+  char buffer[768];  // Збільшено буфер для складних JSON
+  StaticJsonDocument<768> doc;
+
+  // Device info - спільний для всіх сенсорів
+  JsonObject device;
+
+  // 1. Battery sensor
+  doc.clear();
   doc["name"] = "Bluetti Battery";
   doc["state_topic"] = "homeassistant/bluetti/eb3a/battery";
   doc["unit_of_measurement"] = "%";
   doc["device_class"] = "battery";
   doc["unique_id"] = "bluetti_eb3a_battery";
-  JsonObject device1 = doc["device"].to<JsonObject>();
-  device1["identifiers"][0] = "bluetti_eb3a";
-  device1["manufacturer"] = "Bluetti";
-  device1["model"] = "EB3A";
-  device1["name"] = "Bluetti EB3A";
-  char buffer[512];
+  device = doc["device"].to<JsonObject>();
+  device["identifiers"][0] = "bluetti_eb3a";
+  device["manufacturer"] = "Bluetti";
+  device["model"] = "EB3A";
+  device["name"] = "Bluetti EB3A";
   serializeJson(doc, buffer);
-  mqttClient.publish("homeassistant/sensor/bluetti_eb3a/battery/config", buffer,
-                     true);
+  mqttClient.publish("homeassistant/sensor/bluetti_eb3a/battery/config", buffer, true);
+  yield();
 
+  // 2. AC Power sensor
+  doc.clear();
+  doc["name"] = "Bluetti AC Power";
+  doc["state_topic"] = "homeassistant/bluetti/eb3a/ac_power";
+  doc["unit_of_measurement"] = "W";
+  doc["device_class"] = "power";
+  doc["state_class"] = "measurement";
+  doc["unique_id"] = "bluetti_eb3a_ac_power";
+  device = doc["device"].to<JsonObject>();
+  device["identifiers"][0] = "bluetti_eb3a";
+  device["manufacturer"] = "Bluetti";
+  device["model"] = "EB3A";
+  device["name"] = "Bluetti EB3A";
+  serializeJson(doc, buffer);
+  mqttClient.publish("homeassistant/sensor/bluetti_eb3a/ac_power/config", buffer, true);
+  yield();
+
+  // 3. DC Power sensor
+  doc.clear();
+  doc["name"] = "Bluetti DC Power";
+  doc["state_topic"] = "homeassistant/bluetti/eb3a/dc_power";
+  doc["unit_of_measurement"] = "W";
+  doc["device_class"] = "power";
+  doc["state_class"] = "measurement";
+  doc["unique_id"] = "bluetti_eb3a_dc_power";
+  device = doc["device"].to<JsonObject>();
+  device["identifiers"][0] = "bluetti_eb3a";
+  device["manufacturer"] = "Bluetti";
+  device["model"] = "EB3A";
+  device["name"] = "Bluetti EB3A";
+  serializeJson(doc, buffer);
+  mqttClient.publish("homeassistant/sensor/bluetti_eb3a/dc_power/config", buffer, true);
+  yield();
+
+  // 4. Input Power sensor
+  doc.clear();
+  doc["name"] = "Bluetti Input Power";
+  doc["state_topic"] = "homeassistant/bluetti/eb3a/input_power";
+  doc["unit_of_measurement"] = "W";
+  doc["device_class"] = "power";
+  doc["state_class"] = "measurement";
+  doc["unique_id"] = "bluetti_eb3a_input_power";
+  device = doc["device"].to<JsonObject>();
+  device["identifiers"][0] = "bluetti_eb3a";
+  device["manufacturer"] = "Bluetti";
+  device["model"] = "EB3A";
+  device["name"] = "Bluetti EB3A";
+  serializeJson(doc, buffer);
+  mqttClient.publish("homeassistant/sensor/bluetti_eb3a/input_power/config", buffer, true);
+  yield();
+
+  // 5. AC Output switch
   doc.clear();
   doc["name"] = "Bluetti AC Output";
   doc["state_topic"] = "homeassistant/bluetti/eb3a/ac_output/state";
   doc["command_topic"] = "homeassistant/bluetti/eb3a/ac_output/set";
   doc["unique_id"] = "bluetti_eb3a_ac_switch";
-  JsonObject device2 = doc["device"].to<JsonObject>();
-  device2["identifiers"][0] = "bluetti_eb3a";
-  device2["manufacturer"] = "Bluetti";
-  device2["model"] = "EB3A";
-  device2["name"] = "Bluetti EB3A";
+  device = doc["device"].to<JsonObject>();
+  device["identifiers"][0] = "bluetti_eb3a";
+  device["manufacturer"] = "Bluetti";
+  device["model"] = "EB3A";
+  device["name"] = "Bluetti EB3A";
   serializeJson(doc, buffer);
-  mqttClient.publish("homeassistant/switch/bluetti_eb3a/ac_output/config",
-                     buffer, true);
+  mqttClient.publish("homeassistant/switch/bluetti_eb3a/ac_output/config", buffer, true);
+  yield();
 
+  // 6. DC Output switch
   doc.clear();
   doc["name"] = "Bluetti DC Output";
   doc["state_topic"] = "homeassistant/bluetti/eb3a/dc_output/state";
   doc["command_topic"] = "homeassistant/bluetti/eb3a/dc_output/set";
   doc["unique_id"] = "bluetti_eb3a_dc_switch";
-  JsonObject device3 = doc["device"].to<JsonObject>();
-  device3["identifiers"][0] = "bluetti_eb3a";
-  device3["manufacturer"] = "Bluetti";
-  device3["model"] = "EB3A";
-  device3["name"] = "Bluetti EB3A";
+  device = doc["device"].to<JsonObject>();
+  device["identifiers"][0] = "bluetti_eb3a";
+  device["manufacturer"] = "Bluetti";
+  device["model"] = "EB3A";
+  device["name"] = "Bluetti EB3A";
   serializeJson(doc, buffer);
-  mqttClient.publish("homeassistant/switch/bluetti_eb3a/dc_output/config",
-                     buffer, true);
+  mqttClient.publish("homeassistant/switch/bluetti_eb3a/dc_output/config", buffer, true);
+  yield();
+
+  Serial.println("[MQTT] ✅ Published 6 entities to Home Assistant");
 }
 
 void MQTTHandler::onMessage(char *topic, byte *payload, unsigned int length) {
