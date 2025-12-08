@@ -28,6 +28,10 @@ private:
     void handleSetACOutput(AsyncWebServerRequest *request);
     void handleSetDCOutput(AsyncWebServerRequest *request);
     void handleSetChargingSpeed(AsyncWebServerRequest *request);
+    void handleSetEcoMode(AsyncWebServerRequest *request);
+    void handleSetPowerLifting(AsyncWebServerRequest *request);
+    void handleSetLedMode(AsyncWebServerRequest *request);
+    void handleSetEcoShutdown(AsyncWebServerRequest *request);
 };
 
 #endif

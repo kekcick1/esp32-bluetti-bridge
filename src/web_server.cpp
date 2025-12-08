@@ -41,6 +41,10 @@ void WebServerManager::begin() {
         doc["ac_state"] = status->acOutputState;
         doc["dc_state"] = status->dcOutputState;
         doc["charging_speed"] = status->chargingSpeed; // 0=Standard, 1=Silent, 2=Turbo
+        doc["eco_mode"] = status->ecoMode;
+        doc["power_lifting"] = status->powerLifting;
+        doc["led_mode"] = status->ledMode; // 1=Low, 2=High, 3=SOS, 4=Off
+        doc["eco_shutdown"] = status->ecoShutdown; // 1-4 години
         doc["battery_voltage"] = status->esp32UsbPowered ? status->esp32BatteryVoltage : status->esp32Voltage;
         doc["battery_percent"] = status->esp32BatteryPercent;
         doc["usb_powered"] = status->esp32UsbPowered;
@@ -120,6 +124,36 @@ void WebServerManager::begin() {
         handleSetChargingSpeed(request);
     });
     
+    // ECO mode control
+    server.on("/eco_mode", HTTP_POST, [this](AsyncWebServerRequest *request) {
+        handleSetEcoMode(request);
+    });
+    
+    // Power Lifting control
+    server.on("/power_lifting", HTTP_POST, [this](AsyncWebServerRequest *request) {
+        handleSetPowerLifting(request);
+    });
+    
+    // LED mode control
+    server.on("/led_mode", HTTP_POST, [this](AsyncWebServerRequest *request) {
+        handleSetLedMode(request);
+    });
+    
+    // ECO Shutdown control
+    server.on("/eco_shutdown", HTTP_POST, [this](AsyncWebServerRequest *request) {
+        handleSetEcoShutdown(request);
+    });
+    
+    // Power Off
+    server.on("/power_off", HTTP_POST, [this](AsyncWebServerRequest *request) {
+        if (bluetti) {
+            bluetti->powerOff();
+            request->send(200, "text/plain", "Power Off command sent");
+        } else {
+            request->send(400, "text/plain", "Bluetti not available");
+        }
+    });
+    
     // Republish MQTT Discovery
     server.on("/republish_discovery", HTTP_GET, [this](AsyncWebServerRequest *request) {
         extern MQTTHandler mqtt;
@@ -147,7 +181,167 @@ void WebServerManager::setBluettiEnabled(bool enabled) {
 }
 
 String WebServerManager::buildHtml() {
-    return String(F("<!DOCTYPE html><html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>ESP32 Monitor</title><style>body{font-family:Arial;margin:0;padding:12px;background:#f5f5f5;}.c{max-width:800px;margin:0 auto;}.card{background:#fff;padding:16px;border-radius:8px;margin-bottom:12px;box-shadow:0 2px 4px rgba(0,0,0,0.1);}h1{font-size:20px;margin:0 0 12px 0;color:#333;}h2{font-size:16px;margin:0 0 8px 0;color:#555;border-bottom:1px solid #eee;padding-bottom:6px;}.g{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;margin-top:8px;}.i{display:flex;justify-content:space-between;padding:6px;background:#f9f9f9;border-radius:4px;}.l{font-weight:bold;color:#666;font-size:13px;}.v{color:#333;font-size:13px;}.b{display:inline-block;padding:3px 10px;border-radius:10px;font-size:11px;font-weight:bold;}.bs{background:#d4edda;color:#155724;}.bd{background:#f8d7da;color:#721c24;}.bw{background:#fff3cd;color:#856404;}button{width:100%;padding:10px;border:none;border-radius:6px;font-size:14px;margin-top:8px;cursor:pointer;font-weight:bold;}.btn-s{background:#28a745;color:#fff;}.btn-d{background:#dc3545;color:#fff;}.btn-sm{background:#2196F3;color:#fff;padding:4px 8px;font-size:11px;width:auto;margin:0 0 0 8px;}.btn-w{background:#ffc107;color:#000;}button:hover{opacity:0.9;}</style><script>function u(){fetch('/status').then(r=>r.json()).then(d=>{document.getElementById('ws').textContent=d.wifi_connected?'Підключено':'Відключено';document.getElementById('wi').textContent=d.wifi_ip||'0.0.0.0';document.getElementById('wr').textContent=d.wifi_rssi+' dBm';document.getElementById('ms').textContent=d.mqtt_connected?'Підключено':'Очікування';var h=Math.floor(d.uptime/3600),m=Math.floor((d.uptime%3600)/60),s=d.uptime%60;document.getElementById('ut').textContent=h+':'+(m<10?'0':'')+m+':'+(s<10?'0':'')+s;var v=d.battery_voltage||0,p=d.battery_percent||0;if(d.usb_powered){if(v>0.1)document.getElementById('eb').innerHTML=v.toFixed(2)+' V ('+p+'%) <span style=\"color:#4CAF50;\">USB</span>';else document.getElementById('eb').innerHTML='USB Powered';}else if(v<0.05)document.getElementById('eb').textContent=v.toFixed(2)+' V';else if(v>=2.5)document.getElementById('eb').textContent=v.toFixed(2)+' V ('+p+'%)';else document.getElementById('eb').textContent=v.toFixed(2)+' V';document.getElementById('bl').textContent=d.battery_level+'%';var acText=(d.ac_state?'ON':'OFF')+' '+d.ac_power+'W';if(d.ac_input_power>d.ac_power+5)acText+=' (⚡'+d.ac_input_power+'W)';else if(d.ac_state&&d.ac_input_power<=5&&d.ac_power>5)acText+=' (🔌UPS)';document.getElementById('ac').textContent=acText;var dcText=(d.dc_state?'ON':'OFF')+' '+d.dc_power+'W';if(d.dc_input_power>d.dc_power+5)dcText+=' (⚡'+d.dc_input_power+'W)';document.getElementById('dc').textContent=dcText;var inputText=d.input_power+'W';if(d.ac_state&&d.ac_input_power<=5&&d.ac_power>5)inputText+=' (UPS режим)';document.getElementById('ip').textContent=inputText;document.getElementById('cs-text').textContent=d.charging_speed==0?'Standard':(d.charging_speed==1?'Silent':'Turbo');var csContainer=document.getElementById('cs-container');if(csContainer){if(d.bluetti_connected){if(!document.getElementById('cs')){var csBtn=document.createElement('button');csBtn.id='cs';csBtn.className='btn-sm';csBtn.onclick=function(){var next=d.charging_speed==0?1:(d.charging_speed==1?2:0);fetch('/charging_speed',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'speed='+next}).then(()=>setTimeout(u,1000));};csContainer.appendChild(csBtn);}var cs=document.getElementById('cs');if(cs){cs.textContent=d.charging_speed==0?'📊 Standard':(d.charging_speed==1?'🔇 Silent':'⚡ Turbo');}}else{csContainer.innerHTML='';}}document.getElementById('fh').textContent=Math.floor(d.free_heap/1024)+' KB';document.getElementById('th').textContent=Math.floor(d.total_heap/1024)+' KB';document.getElementById('mh').textContent=Math.floor(d.max_heap/1024)+' KB';document.getElementById('cf').textContent=d.cpu_freq+' MHz';var acContainer=document.getElementById('acb-container');if(acContainer){if(d.bluetti_connected){if(!document.getElementById('acb')){var acBtn=document.createElement('button');acBtn.id='acb';acBtn.className='btn-sm';acBtn.onclick=function(){fetch('/ac_output',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'state='+(d.ac_state?'off':'on')}).then(()=>location.reload());};acContainer.appendChild(acBtn);}var ac=document.getElementById('acb');if(ac){ac.value=d.ac_state?'off':'on';ac.textContent=d.ac_state?'🔴 Вимк':'🟢 Увімк';}}else{acContainer.innerHTML='';}}var dcContainer=document.getElementById('dcb-container');if(dcContainer){if(d.bluetti_connected){if(!document.getElementById('dcb')){var dcBtn=document.createElement('button');dcBtn.id='dcb';dcBtn.className='btn-sm';dcBtn.onclick=function(){fetch('/dc_output',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'state='+(d.dc_state?'off':'on')}).then(()=>location.reload());};dcContainer.appendChild(dcBtn);}var dc=document.getElementById('dcb');if(dc){dc.value=d.dc_state?'off':'on';dc.textContent=d.dc_state?'🔴 Вимк':'🟢 Увімк';}}else{dcContainer.innerHTML='';}}var btn=document.getElementById('toggleBtn');if(btn){btn.textContent=d.bluetti_enabled?'🔴 Вимкнути':'🟢 Увімкнути';btn.className=d.bluetti_enabled?'btn-d':'btn-s';}var bs=document.getElementById('bs');if(bs){bs.textContent=d.bluetti_connected?'Підключено':(d.bluetti_enabled?'Підключення...':'Вимкнено');}}).catch(e=>console.error('E:',e));}setInterval(u,3000);u();</script></head><body><div class='c'><div class='card'><h1>🔋 ESP32 Monitor</h1></div><div class='card'><h2>📡 Система</h2><div class='g'><div class='i'><span class='l'>WiFi:</span><span class='b bs'><span id='ws'>...</span></span></div><div class='i'><span class='l'>IP:</span><span class='v' id='wi'>...</span></div><div class='i'><span class='l'>RSSI:</span><span class='v' id='wr'>...</span></div><div class='i'><span class='l'>MQTT:</span><span class='b bw'><span id='ms'>...</span></span></div><div class='i'><span class='l'>Uptime:</span><span class='v' id='ut'>...</span></div><div class='i'><span class='l'>Батарея:</span><span class='v' id='eb'>...</span></div></div></div><div class='card'><h2>💻 ESP32</h2><div class='g'><div class='i'><span class='l'>Вільна:</span><span class='v' id='fh'>...</span></div><div class='i'><span class='l'>Загальна:</span><span class='v' id='th'>...</span></div><div class='i'><span class='l'>Макс:</span><span class='v' id='mh'>...</span></div><div class='i'><span class='l'>CPU:</span><span class='v' id='cf'>...</span></div></div></div><div class='card'><h2>🔋 Bluetti</h2><div class='i'><span class='l'>Статус:</span><span class='b bw'><span id='bs'>...</span></span></div><div class='g'><div class='i'><span class='l'>Батарея:</span><span class='v' id='bl'>...</span></div><div class='i'><span class='l'>AC:</span><span class='v' id='ac'>...</span><span id='acb-container'></span></div><div class='i'><span class='l'>DC:</span><span class='v' id='dc'>...</span><span id='dcb-container'></span></div><div class='i'><span class='l'>Вхід:</span><span class='v' id='ip'>...</span></div><div class='i'><span class='l'>Зарядка:</span><span class='v' id='cs-text'>...</span><span id='cs-container'></span></div></div><button id='toggleBtn' class='btn-s' onclick=\"location.href='/toggle'\">Увімкнути</button></div><div class='card'><button class='btn-w' onclick=\"location.href='/config'\">⚙️ Налаштування</button><button class='btn-w' onclick=\"location.href='/update'\">📤 Прошивка</button><button class='btn-w' onclick=\"if(confirm('Перезапустити?'))location.href='/restart'\">🔄 Перезапустити</button></div></div></body></html>"));
+    // Розділяю на частини через обмеження розміру F() макросу
+    String html;
+    html.reserve(12000);
+    
+    // Частина 1: Header + CSS
+    html += F("<!DOCTYPE html><html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>ESP32 Monitor</title>");
+    html += F("<style>body{font-family:Arial;margin:0;padding:12px;background:#f5f5f5;}.c{max-width:800px;margin:0 auto;}");
+    html += F(".card{background:#fff;padding:16px;border-radius:8px;margin-bottom:12px;box-shadow:0 2px 4px rgba(0,0,0,0.1);}");
+    html += F("h1{font-size:20px;margin:0 0 12px 0;color:#333;}h2{font-size:16px;margin:0 0 8px 0;color:#555;border-bottom:1px solid #eee;padding-bottom:6px;}");
+    html += F(".g{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;margin-top:8px;}");
+    html += F(".i{display:flex;justify-content:space-between;padding:6px;background:#f9f9f9;border-radius:4px;align-items:center;}");
+    html += F(".l{font-weight:bold;color:#666;font-size:13px;}.v{color:#333;font-size:13px;}");
+    html += F(".b{display:inline-block;padding:3px 10px;border-radius:10px;font-size:11px;font-weight:bold;}");
+    html += F(".bs{background:#d4edda;color:#155724;}.bd{background:#f8d7da;color:#721c24;}.bw{background:#fff3cd;color:#856404;}");
+    html += F("button{width:100%;padding:10px;border:none;border-radius:6px;font-size:14px;margin-top:8px;cursor:pointer;font-weight:bold;}");
+    html += F(".btn-s{background:#28a745;color:#fff;}.btn-d{background:#dc3545;color:#fff;}");
+    html += F(".btn-sm{background:#2196F3;color:#fff;padding:4px 8px;font-size:11px;width:auto;margin:0 0 0 8px;}");
+    html += F(".btn-w{background:#ffc107;color:#000;}.btn-eco{background:#4CAF50;color:#fff;padding:8px;margin-top:4px;}");
+    html += F(".btn-power{background:#F44336;color:#fff;padding:8px;margin-top:4px;}button:hover{opacity:0.9;}");
+    html += F("select{padding:4px 8px;font-size:11px;border-radius:4px;margin-left:8px;}</style>");
+    
+    // Частина 2: JavaScript (початок)
+    html += F("<script>function u(){fetch('/status').then(r=>r.json()).then(d=>{");
+    html += F("document.getElementById('ws').textContent=d.wifi_connected?'Підключено':'Відключено';");
+    html += F("document.getElementById('wi').textContent=d.wifi_ip||'0.0.0.0';document.getElementById('wr').textContent=d.wifi_rssi+' dBm';");
+    html += F("document.getElementById('ms').textContent=d.mqtt_connected?'Підключено':'Очікування';");
+    html += F("var h=Math.floor(d.uptime/3600),m=Math.floor((d.uptime%3600)/60),s=d.uptime%60;");
+    html += F("document.getElementById('ut').textContent=h+':'+(m<10?'0':'')+m+':'+(s<10?'0':'')+s;");
+    html += F("var v=d.battery_voltage||0,p=d.battery_percent||0;if(d.usb_powered){");
+    html += F("if(v>0.1)document.getElementById('eb').innerHTML=v.toFixed(2)+' V ('+p+'%) <span style=\"color:#4CAF50;\">USB</span>';");
+    html += F("else document.getElementById('eb').innerHTML='USB Powered';}");
+    html += F("else if(v<0.05)document.getElementById('eb').textContent=v.toFixed(2)+' V';");
+    html += F("else if(v>=2.5)document.getElementById('eb').textContent=v.toFixed(2)+' V ('+p+'%)';");
+    html += F("else document.getElementById('eb').textContent=v.toFixed(2)+' V';");
+    html += F("document.getElementById('bl').textContent=d.battery_level+'%';");
+    
+    // Частина 3: AC/DC/Input Power
+    html += F("var acText=(d.ac_state?'ON':'OFF')+' '+d.ac_power+'W';");
+    html += F("if(d.ac_input_power>d.ac_power+5)acText+=' (⚡'+d.ac_input_power+'W)';");
+    html += F("else if(d.ac_state&&d.ac_input_power<=5&&d.ac_power>5)acText+=' (🔌UPS)';");
+    html += F("document.getElementById('ac').textContent=acText;");
+    html += F("var dcText=(d.dc_state?'ON':'OFF')+' '+d.dc_power+'W';");
+    html += F("if(d.dc_input_power>d.dc_power+5)dcText+=' (⚡'+d.dc_input_power+'W)';");
+    html += F("document.getElementById('dc').textContent=dcText;");
+    html += F("var inputText=d.input_power+'W';if(d.ac_state&&d.ac_input_power<=5&&d.ac_power>5)inputText+=' (UPS режим)';");
+    html += F("document.getElementById('ip').textContent=inputText;");
+    
+    // Частина 4: New Features Display
+    html += F("document.getElementById('cs-text').textContent=d.charging_speed==0?'Standard':(d.charging_speed==1?'Silent':'Turbo');");
+    html += F("document.getElementById('eco-text').textContent=d.eco_mode?'ON':'OFF';");
+    html += F("document.getElementById('pl-text').textContent=d.power_lifting?'ON':'OFF';");
+    html += F("var ledText=['','Low','High','SOS','Off'];document.getElementById('led-text').textContent=ledText[d.led_mode]||'Off';");
+    html += F("document.getElementById('ecs-text').textContent=d.eco_shutdown+'h';");
+    
+    // Частина 5: ESP32 Memory
+    html += F("document.getElementById('fh').textContent=Math.floor(d.free_heap/1024)+' KB';");
+    html += F("document.getElementById('th').textContent=Math.floor(d.total_heap/1024)+' KB';");
+    html += F("document.getElementById('mh').textContent=Math.floor(d.max_heap/1024)+' KB';");
+    html += F("document.getElementById('cf').textContent=d.cpu_freq+' MHz';");
+    
+    // Частина 6: Dynamic Buttons (AC)
+    html += F("var acC=document.getElementById('acb-container');if(acC){if(d.bluetti_connected){");
+    html += F("if(!document.getElementById('acb')){var acB=document.createElement('button');acB.id='acb';acB.className='btn-sm';");
+    html += F("acB.onclick=function(){fetch('/ac_output',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},");
+    html += F("body:'state='+(d.ac_state?'off':'on')}).then(()=>setTimeout(u,1000));};acC.appendChild(acB);}");
+    html += F("var ac=document.getElementById('acb');if(ac)ac.textContent=d.ac_state?'🔴 Вимк':'🟢 Увімк';");
+    html += F("}else{acC.innerHTML='';}}");
+    
+    // Частина 7: Dynamic Buttons (DC)
+    html += F("var dcC=document.getElementById('dcb-container');if(dcC){if(d.bluetti_connected){");
+    html += F("if(!document.getElementById('dcb')){var dcB=document.createElement('button');dcB.id='dcb';dcB.className='btn-sm';");
+    html += F("dcB.onclick=function(){fetch('/dc_output',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},");
+    html += F("body:'state='+(d.dc_state?'off':'on')}).then(()=>setTimeout(u,1000));};dcC.appendChild(dcB);}");
+    html += F("var dc=document.getElementById('dcb');if(dc)dc.textContent=d.dc_state?'🔴 Вимк':'🟢 Увімк';");
+    html += F("}else{dcC.innerHTML='';}}");
+    
+    // Частина 8: Dynamic Buttons (Charging Speed)
+    html += F("var csC=document.getElementById('cs-container');if(csC){if(d.bluetti_connected){");
+    html += F("if(!document.getElementById('cs')){var csB=document.createElement('button');csB.id='cs';csB.className='btn-sm';");
+    html += F("csB.onclick=function(){var next=d.charging_speed==0?1:(d.charging_speed==1?2:0);");
+    html += F("fetch('/charging_speed',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},");
+    html += F("body:'speed='+next}).then(()=>setTimeout(u,1000));};csC.appendChild(csB);}");
+    html += F("var cs=document.getElementById('cs');if(cs)cs.textContent=d.charging_speed==0?'📊 Standard':(d.charging_speed==1?'🔇 Silent':'⚡ Turbo');");
+    html += F("}else{csC.innerHTML='';}}");
+    
+    // Частина 9: Toggle Button
+    html += F("var btn=document.getElementById('toggleBtn');if(btn){");
+    html += F("btn.textContent=d.bluetti_enabled?'🔴 Вимкнути':'🟢 Увімкнути';");
+    html += F("btn.className=d.bluetti_enabled?'btn-d':'btn-s';}");
+    html += F("var bs=document.getElementById('bs');if(bs)bs.textContent=d.bluetti_connected?'Підключено':(d.bluetti_enabled?'Підключення...':'Вимкнено');");
+    
+    // Частина 10: New Feature Buttons
+    html += F("var ecoB=document.getElementById('eco-btn'),plB=document.getElementById('pl-btn');");
+    html += F("var ledS=document.getElementById('led-select'),ecsS=document.getElementById('ecs-select'),pwrB=document.getElementById('power-btn');");
+    html += F("if(d.bluetti_connected){");
+    html += F("if(ecoB){ecoB.style.display='block';ecoB.textContent=d.eco_mode?'🌿 ECO: ON':'🌿 ECO: OFF';");
+    html += F("ecoB.onclick=function(){fetch('/eco_mode',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},");
+    html += F("body:'state='+(d.eco_mode?'off':'on')}).then(()=>setTimeout(u,1000));};}");
+    html += F("if(plB){plB.style.display='block';plB.textContent=d.power_lifting?'⚡ Power Lifting: ON':'⚡ Power Lifting: OFF';");
+    html += F("plB.onclick=function(){fetch('/power_lifting',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},");
+    html += F("body:'state='+(d.power_lifting?'off':'on')}).then(()=>setTimeout(u,1000));};}");
+    html += F("if(ledS){ledS.style.display='inline-block';ledS.value=d.led_mode||4;");
+    html += F("ledS.onchange=function(){fetch('/led_mode',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},");
+    html += F("body:'mode='+ledS.value}).then(()=>setTimeout(u,1000));};}");
+    html += F("if(ecsS){ecsS.style.display='inline-block';ecsS.value=d.eco_shutdown||1;");
+    html += F("ecsS.onchange=function(){fetch('/eco_shutdown',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},");
+    html += F("body:'hours='+ecsS.value}).then(()=>setTimeout(u,1000));};}");
+    html += F("if(pwrB)pwrB.style.display='block';");
+    html += F("}else{if(ecoB)ecoB.style.display='none';if(plB)plB.style.display='none';");
+    html += F("if(ledS)ledS.style.display='none';if(ecsS)ecsS.style.display='none';if(pwrB)pwrB.style.display='none';}");
+    html += F("}).catch(e=>console.error('E:',e));}setInterval(u,3000);u();</script></head>");
+    
+    // Частина 11: HTML Body
+    html += F("<body><div class='c'><div class='card'><h1>🔋 ESP32 Monitor</h1></div>");
+    html += F("<div class='card'><h2>📡 Система</h2><div class='g'>");
+    html += F("<div class='i'><span class='l'>WiFi:</span><span class='b bs'><span id='ws'>...</span></span></div>");
+    html += F("<div class='i'><span class='l'>IP:</span><span class='v' id='wi'>...</span></div>");
+    html += F("<div class='i'><span class='l'>RSSI:</span><span class='v' id='wr'>...</span></div>");
+    html += F("<div class='i'><span class='l'>MQTT:</span><span class='b bw'><span id='ms'>...</span></span></div>");
+    html += F("<div class='i'><span class='l'>Uptime:</span><span class='v' id='ut'>...</span></div>");
+    html += F("<div class='i'><span class='l'>Батарея:</span><span class='v' id='eb'>...</span></div>");
+    html += F("</div></div>");
+    
+    html += F("<div class='card'><h2>💻 ESP32</h2><div class='g'>");
+    html += F("<div class='i'><span class='l'>Вільна:</span><span class='v' id='fh'>...</span></div>");
+    html += F("<div class='i'><span class='l'>Загальна:</span><span class='v' id='th'>...</span></div>");
+    html += F("<div class='i'><span class='l'>Макс:</span><span class='v' id='mh'>...</span></div>");
+    html += F("<div class='i'><span class='l'>CPU:</span><span class='v' id='cf'>...</span></div>");
+    html += F("</div></div>");
+    
+    html += F("<div class='card'><h2>🔋 Bluetti</h2>");
+    html += F("<div class='i'><span class='l'>Статус:</span><span class='b bw'><span id='bs'>...</span></span></div>");
+    html += F("<div class='g'>");
+    html += F("<div class='i'><span class='l'>Батарея:</span><span class='v' id='bl'>...</span></div>");
+    html += F("<div class='i'><span class='l'>AC:</span><span class='v' id='ac'>...</span><span id='acb-container'></span></div>");
+    html += F("<div class='i'><span class='l'>DC:</span><span class='v' id='dc'>...</span><span id='dcb-container'></span></div>");
+    html += F("<div class='i'><span class='l'>Вхід:</span><span class='v' id='ip'>...</span></div>");
+    html += F("<div class='i'><span class='l'>Зарядка:</span><span class='v' id='cs-text'>...</span><span id='cs-container'></span></div>");
+    html += F("<div class='i'><span class='l'>ECO:</span><span class='v' id='eco-text'>...</span></div>");
+    html += F("<div class='i'><span class='l'>Power Lift:</span><span class='v' id='pl-text'>...</span></div>");
+    html += F("<div class='i'><span class='l'>LED:</span><span class='v' id='led-text'>...</span>");
+    html += F("<select id='led-select' style='display:none;'><option value='1'>Low</option><option value='2'>High</option>");
+    html += F("<option value='3'>SOS</option><option value='4'>Off</option></select></div>");
+    html += F("<div class='i'><span class='l'>ECO Таймер:</span><span class='v' id='ecs-text'>...</span>");
+    html += F("<select id='ecs-select' style='display:none;'><option value='1'>1h</option><option value='2'>2h</option>");
+    html += F("<option value='3'>3h</option><option value='4'>4h</option></select></div>");
+    html += F("</div>");
+    html += F("<button id='eco-btn' class='btn-eco' style='display:none;'>🌿 ECO Mode</button>");
+    html += F("<button id='pl-btn' class='btn-eco' style='display:none;'>⚡ Power Lifting</button>");
+    html += F("<button id='power-btn' class='btn-power' style='display:none;' onclick=\"if(confirm('Вимкнути Bluetti?'))");
+    html += F("fetch('/power_off',{method:'POST'}).then(()=>alert('Bluetti вимкнено'));\">🔴 Power Off</button>");
+    html += F("<button id='toggleBtn' class='btn-s' onclick=\"location.href='/toggle'\">Увімкнути</button>");
+    html += F("</div>");
+    
+    html += F("<div class='card'>");
+    html += F("<button class='btn-w' onclick=\"location.href='/config'\">⚙️ Налаштування</button>");
+    html += F("<button class='btn-w' onclick=\"location.href='/update'\">📤 Прошивка</button>");
+    html += F("<button class='btn-w' onclick=\"if(confirm('Перезапустити?'))location.href='/restart'\">🔄 Перезапустити</button>");
+    html += F("</div></div></body></html>");
+    
+    return html;
 }
 
 String WebServerManager::buildConfigHtml() {
@@ -507,3 +701,84 @@ void WebServerManager::handleSetChargingSpeed(AsyncWebServerRequest *request) {
     }
 }
 
+void WebServerManager::handleSetEcoMode(AsyncWebServerRequest *request) {
+    if (bluetti) {
+        String stateStr = "";
+        if (request->hasParam("state", true)) {
+            stateStr = request->getParam("state", true)->value();
+        }
+        bool state = (stateStr == "on" || stateStr == "ON" || stateStr == "1" || stateStr == "true");
+        bool success = bluetti->setEcoMode(state);
+        if (success) {
+            request->send(200, "text/plain", state ? "ECO Mode ON" : "ECO Mode OFF");
+        } else {
+            request->send(500, "text/plain", "Failed to set ECO mode");
+        }
+    } else {
+        request->send(400, "text/plain", "Bluetti not available");
+    }
+}
+
+void WebServerManager::handleSetPowerLifting(AsyncWebServerRequest *request) {
+    if (bluetti) {
+        String stateStr = "";
+        if (request->hasParam("state", true)) {
+            stateStr = request->getParam("state", true)->value();
+        }
+        bool state = (stateStr == "on" || stateStr == "ON" || stateStr == "1" || stateStr == "true");
+        bool success = bluetti->setPowerLifting(state);
+        if (success) {
+            request->send(200, "text/plain", state ? "Power Lifting ON" : "Power Lifting OFF");
+        } else {
+            request->send(500, "text/plain", "Failed to set Power Lifting");
+        }
+    } else {
+        request->send(400, "text/plain", "Bluetti not available");
+    }
+}
+
+void WebServerManager::handleSetLedMode(AsyncWebServerRequest *request) {
+    if (bluetti) {
+        String modeStr = "";
+        if (request->hasParam("mode", true)) {
+            modeStr = request->getParam("mode", true)->value();
+        }
+        uint8_t mode = 4;
+        if (modeStr == "low" || modeStr == "Low" || modeStr == "1") { mode = 1; }
+        else if (modeStr == "high" || modeStr == "High" || modeStr == "2") { mode = 2; }
+        else if (modeStr == "sos" || modeStr == "SOS" || modeStr == "3") { mode = 3; }
+        else if (modeStr == "off" || modeStr == "Off" || modeStr == "4") { mode = 4; }
+        else { request->send(400, "text/plain", "Invalid mode"); return; }
+        bool success = bluetti->setLedMode(mode);
+        if (success) {
+            const char* modeNames[] = {"", "Low", "High", "SOS", "Off"};
+            request->send(200, "text/plain", String("LED Mode: ") + modeNames[mode]);
+        } else {
+            request->send(500, "text/plain", "Failed to set LED mode");
+        }
+    } else {
+        request->send(400, "text/plain", "Bluetti not available");
+    }
+}
+
+void WebServerManager::handleSetEcoShutdown(AsyncWebServerRequest *request) {
+    if (bluetti) {
+        String hoursStr = "";
+        if (request->hasParam("hours", true)) {
+            hoursStr = request->getParam("hours", true)->value();
+        }
+        uint8_t hours = hoursStr.toInt();
+        if (hours < 1 || hours > 4) {
+            request->send(400, "text/plain", "Invalid hours. Use 1-4");
+            return;
+        }
+        bool success = bluetti->setEcoShutdown(hours);
+        if (success) {
+            request->send(200, "text/plain", String("ECO Shutdown: ") + hours + "h");
+        } else {
+            request->send(500, "text/plain", "Failed to set ECO shutdown");
+        }
+    } else {
+        request->send(400, "text/plain", "Bluetti not available");
+    }
+}

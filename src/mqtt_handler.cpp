@@ -122,6 +122,11 @@ bool MQTTHandler::ensureConnection() {
       mqttClient.subscribe("homeassistant/bluetti/eb3a/ac_output/set");
       mqttClient.subscribe("homeassistant/bluetti/eb3a/dc_output/set");
       mqttClient.subscribe("homeassistant/bluetti/eb3a/charging_speed/set");
+      mqttClient.subscribe("homeassistant/bluetti/eb3a/eco_mode/set");
+      mqttClient.subscribe("homeassistant/bluetti/eb3a/power_lifting/set");
+      mqttClient.subscribe("homeassistant/bluetti/eb3a/led_mode/set");
+      mqttClient.subscribe("homeassistant/bluetti/eb3a/eco_shutdown/set");
+      mqttClient.subscribe("homeassistant/bluetti/eb3a/power_off");
       Serial.println("[MQTT] ✅ Subscribed to control commands");
       
       yield();
@@ -205,6 +210,26 @@ void MQTTHandler::publishStatus() {
   uint8_t speedIdx = status->chargingSpeed;
   if (speedIdx > 2) speedIdx = 0;
   mqttClient.publish("homeassistant/bluetti/eb3a/charging_speed", speedNames[speedIdx], true);
+  
+  // ECO mode
+  mqttClient.publish("homeassistant/bluetti/eb3a/eco_mode/state",
+                     status->ecoMode ? "ON" : "OFF", true);
+  
+  // Power Lifting
+  mqttClient.publish("homeassistant/bluetti/eb3a/power_lifting/state",
+                     status->powerLifting ? "ON" : "OFF", true);
+  
+  // LED mode
+  const char* ledNames[] = {"", "Low", "High", "SOS", "Off"};
+  uint8_t ledIdx = status->ledMode;
+  if (ledIdx < 1 || ledIdx > 4) ledIdx = 4; // Default Off
+  mqttClient.publish("homeassistant/bluetti/eb3a/led_mode", ledNames[ledIdx], true);
+  
+  // ECO Shutdown
+  const char* ecoShutNames[] = {"", "1h", "2h", "3h", "4h"};
+  uint8_t ecoIdx = status->ecoShutdown;
+  if (ecoIdx < 1 || ecoIdx > 4) ecoIdx = 1; // Default 1h
+  mqttClient.publish("homeassistant/bluetti/eb3a/eco_shutdown", ecoShutNames[ecoIdx], true);
 }
 
 void MQTTHandler::publishDiscovery() {
@@ -362,7 +387,97 @@ void MQTTHandler::publishDiscovery() {
   Serial.printf("[MQTT] Charging Speed config: %s (size: %d)\n", result ? "✅" : "❌", strlen(buffer));
   yield();
 
-  Serial.println("[MQTT] ✅ Published 7 entities to Home Assistant");
+  // 7. ECO Mode switch
+  doc.clear();
+  doc["name"] = "Bluetti ECO Mode";
+  doc["state_topic"] = "homeassistant/bluetti/eb3a/eco_mode/state";
+  doc["command_topic"] = "homeassistant/bluetti/eb3a/eco_mode/set";
+  doc["unique_id"] = "bluetti_eb3a_eco_mode";
+  device = doc["device"].to<JsonObject>();
+  device["identifiers"][0] = "bluetti_eb3a";
+  device["manufacturer"] = "Bluetti";
+  device["model"] = "EB3A";
+  device["name"] = "Bluetti EB3A";
+  serializeJson(doc, buffer);
+  result = mqttClient.publish("homeassistant/switch/bluetti_eb3a/eco_mode/config", buffer, true);
+  Serial.printf("[MQTT] ECO Mode config: %s (size: %d)\n", result ? "✅" : "❌", strlen(buffer));
+  yield();
+
+  // 8. Power Lifting switch
+  doc.clear();
+  doc["name"] = "Bluetti Power Lifting";
+  doc["state_topic"] = "homeassistant/bluetti/eb3a/power_lifting/state";
+  doc["command_topic"] = "homeassistant/bluetti/eb3a/power_lifting/set";
+  doc["unique_id"] = "bluetti_eb3a_power_lifting";
+  device = doc["device"].to<JsonObject>();
+  device["identifiers"][0] = "bluetti_eb3a";
+  device["manufacturer"] = "Bluetti";
+  device["model"] = "EB3A";
+  device["name"] = "Bluetti EB3A";
+  serializeJson(doc, buffer);
+  result = mqttClient.publish("homeassistant/switch/bluetti_eb3a/power_lifting/config", buffer, true);
+  Serial.printf("[MQTT] Power Lifting config: %s (size: %d)\n", result ? "✅" : "❌", strlen(buffer));
+  yield();
+
+  // 9. LED Mode select
+  doc.clear();
+  doc["name"] = "Bluetti LED Mode";
+  doc["state_topic"] = "homeassistant/bluetti/eb3a/led_mode";
+  doc["command_topic"] = "homeassistant/bluetti/eb3a/led_mode/set";
+  doc["unique_id"] = "bluetti_eb3a_led_mode";
+  options = doc["options"].to<JsonArray>();
+  options.add("Low");
+  options.add("High");
+  options.add("SOS");
+  options.add("Off");
+  device = doc["device"].to<JsonObject>();
+  device["identifiers"][0] = "bluetti_eb3a";
+  device["manufacturer"] = "Bluetti";
+  device["model"] = "EB3A";
+  device["name"] = "Bluetti EB3A";
+  serializeJson(doc, buffer);
+  result = mqttClient.publish("homeassistant/select/bluetti_eb3a/led_mode/config", buffer, true);
+  Serial.printf("[MQTT] LED Mode config: %s (size: %d)\n", result ? "✅" : "❌", strlen(buffer));
+  yield();
+
+  // 10. ECO Shutdown select
+  doc.clear();
+  doc["name"] = "Bluetti ECO Shutdown";
+  doc["state_topic"] = "homeassistant/bluetti/eb3a/eco_shutdown";
+  doc["command_topic"] = "homeassistant/bluetti/eb3a/eco_shutdown/set";
+  doc["unique_id"] = "bluetti_eb3a_eco_shutdown";
+  options = doc["options"].to<JsonArray>();
+  options.add("1h");
+  options.add("2h");
+  options.add("3h");
+  options.add("4h");
+  device = doc["device"].to<JsonObject>();
+  device["identifiers"][0] = "bluetti_eb3a";
+  device["manufacturer"] = "Bluetti";
+  device["model"] = "EB3A";
+  device["name"] = "Bluetti EB3A";
+  serializeJson(doc, buffer);
+  result = mqttClient.publish("homeassistant/select/bluetti_eb3a/eco_shutdown/config", buffer, true);
+  Serial.printf("[MQTT] ECO Shutdown config: %s (size: %d)\n", result ? "✅" : "❌", strlen(buffer));
+  yield();
+
+  // 11. Power Off button
+  doc.clear();
+  doc["name"] = "Bluetti Power Off";
+  doc["command_topic"] = "homeassistant/bluetti/eb3a/power_off";
+  doc["unique_id"] = "bluetti_eb3a_power_off";
+  doc["device_class"] = "restart";
+  device = doc["device"].to<JsonObject>();
+  device["identifiers"][0] = "bluetti_eb3a";
+  device["manufacturer"] = "Bluetti";
+  device["model"] = "EB3A";
+  device["name"] = "Bluetti EB3A";
+  serializeJson(doc, buffer);
+  result = mqttClient.publish("homeassistant/button/bluetti_eb3a/power_off/config", buffer, true);
+  Serial.printf("[MQTT] Power Off config: %s (size: %d)\n", result ? "✅" : "❌", strlen(buffer));
+  yield();
+
+  Serial.println("[MQTT] ✅ Published 12 entities to Home Assistant");
 }
 
 void MQTTHandler::onMessage(char *topic, byte *payload, unsigned int length) {
@@ -376,11 +491,6 @@ void MQTTHandler::onMessage(char *topic, byte *payload, unsigned int length) {
   if (strcmp(topic, "homeassistant/bluetti/eb3a/ac_output/set") == 0) {
     bluetti->setACOutput(message == "ON");
     Serial.printf("[MQTT] AC Output command: %s\n", message.c_str());
-    return;
-  } else if (strcmp(topic, "homeassistant/bluetti/eb3a/dc_output/set") == 0) {
-    bluetti->setDCOutput(message == "ON");
-    Serial.printf("[MQTT] DC Output command: %s\n", message.c_str());
-    return;
   } else if (strcmp(topic, "homeassistant/bluetti/eb3a/charging_speed/set") == 0) {
     uint8_t speed = 0; // Standard
     if (message == "Silent" || message == "silent" || message == "1") {
@@ -390,6 +500,34 @@ void MQTTHandler::onMessage(char *topic, byte *payload, unsigned int length) {
     }
     Serial.printf("[MQTT] Charging speed command: %s -> %d\n", message.c_str(), speed);
     bluetti->setChargingSpeed(speed);
+    return;
+  } else if (strcmp(topic, "homeassistant/bluetti/eb3a/eco_mode/set") == 0) {
+    bluetti->setEcoMode(message == "ON");
+    Serial.printf("[MQTT] ECO mode command: %s\n", message.c_str());
+    return;
+  } else if (strcmp(topic, "homeassistant/bluetti/eb3a/power_lifting/set") == 0) {
+    bluetti->setPowerLifting(message == "ON");
+    Serial.printf("[MQTT] Power Lifting command: %s\n", message.c_str());
+    return;
+  } else if (strcmp(topic, "homeassistant/bluetti/eb3a/led_mode/set") == 0) {
+    uint8_t mode = 4; // Default Off
+    if (message == "Low") mode = 1;
+    else if (message == "High") mode = 2;
+    else if (message == "SOS") mode = 3;
+    bluetti->setLedMode(mode);
+    Serial.printf("[MQTT] LED mode command: %s -> %d\n", message.c_str(), mode);
+    return;
+  } else if (strcmp(topic, "homeassistant/bluetti/eb3a/eco_shutdown/set") == 0) {
+    uint8_t hours = 1; // Default 1h
+    if (message == "2h") hours = 2;
+    else if (message == "3h") hours = 3;
+    else if (message == "4h") hours = 4;
+    bluetti->setEcoShutdown(hours);
+    Serial.printf("[MQTT] ECO shutdown command: %s -> %dh\n", message.c_str(), hours);
+    return;
+  } else if (strcmp(topic, "homeassistant/bluetti/eb3a/power_off") == 0) {
+    bluetti->powerOff();
+    Serial.println("[MQTT] Power Off command");
     return;
   }
   

@@ -22,6 +22,10 @@ struct SystemStatus {
     int inputPower = 0;
     bool acOutputState = false;
     bool dcOutputState = false;
+    bool ecoMode = false;          // ECO режим ввімкнено/вимкнено
+    bool powerLifting = false;     // Підняття потужності (Power Lifting)
+    uint8_t ledMode = 0;           // 1=Low, 2=High, 3=SOS, 4=Off
+    uint8_t ecoShutdown = 0;       // 1..4 години авто вимкнення ECO
     
     // Bluetti розширені дані
     int dcInputPower = 0;      // DC вхідна потужність (W)

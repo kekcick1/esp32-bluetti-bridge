@@ -556,6 +556,8 @@ void BluettiDevice::loop() {
     requestStatus();
     delay(500); // Даємо час на отримання відповіді
     requestChargingMode(); // Читаємо поточний режим зарядки
+    delay(300);
+    pollFeatureState(); // Опитуємо додаткові функції (ротація)
   }
   
   // ВАЖЛИВО: Якщо не отримуємо дані більше 10 секунд, спробуємо перепідключитися
@@ -840,6 +842,36 @@ bool BluettiDevice::setChargingSpeed(uint8_t speed) {
   return success;
 }
 
+bool BluettiDevice::setEcoMode(bool state) {
+  return writeSingleRegister(0x0BC3, state ? 1 : 0);
+}
+
+bool BluettiDevice::setPowerLifting(bool state) {
+  return writeSingleRegister(0x0BC6, state ? 1 : 0);
+}
+
+bool BluettiDevice::setLedMode(uint8_t mode) {
+  // 1=Low, 2=High, 3=SOS, 4=Off
+  if (mode < 1 || mode > 4) {
+    Serial.println("[Bluetti] ERROR: Invalid LED mode (1-4)");
+    return false;
+  }
+  return writeSingleRegister(0x0BBA, mode);
+}
+
+bool BluettiDevice::setEcoShutdown(uint8_t hours) {
+  // 1-4 години
+  if (hours < 1 || hours > 4) {
+    Serial.println("[Bluetti] ERROR: Invalid ECO shutdown hours (1-4)");
+    return false;
+  }
+  return writeSingleRegister(0x0BC4, hours);
+}
+
+bool BluettiDevice::powerOff() {
+  return writeSingleRegister(0x0BBC, 1);
+}
+
 uint8_t BluettiDevice::getBatteryLevel() const { return cachedBattery; }
 
 int BluettiDevice::getACOutputPower() const { return cachedAcPower; }
@@ -864,6 +896,77 @@ float BluettiDevice::getBatteryVoltage() const {
 
 uint8_t BluettiDevice::getChargingSpeed() const {
   return status->chargingSpeed;
+}
+
+bool BluettiDevice::getEcoMode() const {
+  return status->ecoMode;
+}
+
+bool BluettiDevice::getPowerLifting() const {
+  return status->powerLifting;
+}
+
+uint8_t BluettiDevice::getLedMode() const {
+  return status->ledMode;
+}
+
+uint8_t BluettiDevice::getEcoShutdown() const {
+  return status->ecoShutdown;
+}
+
+bool BluettiDevice::writeSingleRegister(uint16_t reg, uint16_t value) {
+  if (!connected || !client || !client->isConnected() || !writeCharacteristic) {
+    return false;
+  }
+  
+  uint8_t cmd[8];
+  cmd[0] = 0x01; // Device ID
+  cmd[1] = 0x06; // Function: Write Single Register
+  cmd[2] = (reg >> 8) & 0xFF;
+  cmd[3] = reg & 0xFF;
+  cmd[4] = (value >> 8) & 0xFF;
+  cmd[5] = value & 0xFF;
+  
+  uint16_t crc = calculateCRC16(cmd, 6);
+  cmd[6] = crc & 0xFF;
+  cmd[7] = (crc >> 8) & 0xFF;
+  
+  Serial.printf("[Bluetti] Write reg 0x%04X = %d... ", reg, value);
+  bool success = sendCommand(cmd, sizeof(cmd));
+  Serial.println(success ? "✅" : "❌");
+  return success;
+}
+
+void BluettiDevice::requestRegister(uint16_t reg) {
+  if (!connected || !client || !client->isConnected() || !writeCharacteristic) {
+    return;
+  }
+  
+  uint8_t cmd[8];
+  cmd[0] = 0x01; // Device ID
+  cmd[1] = 0x03; // Function: Read Holding Registers
+  cmd[2] = (reg >> 8) & 0xFF;
+  cmd[3] = reg & 0xFF;
+  cmd[4] = 0x00; // Quantity High
+  cmd[5] = 0x01; // Quantity Low (1 register)
+  
+  uint16_t crc = calculateCRC16(cmd, 6);
+  cmd[6] = crc & 0xFF;
+  cmd[7] = (crc >> 8) & 0xFF;
+  
+  sendCommand(cmd, sizeof(cmd));
+  lastSingleRegisterRequested = reg;
+}
+
+void BluettiDevice::pollFeatureState() {
+  // Ротація опитування додаткових функцій (не критичні, опитуємо рідко)
+  switch (featurePollIndex % 4) {
+    case 0: requestRegister(0x0BC3); break; // ECO Mode
+    case 1: requestRegister(0x0BC6); break; // Power Lifting
+    case 2: requestRegister(0x0BBA); break; // LED Mode
+    case 3: requestRegister(0x0BC4); break; // ECO Shutdown
+  }
+  featurePollIndex++;
 }
 
 void BluettiDevice::requestChargingMode() {
@@ -958,14 +1061,39 @@ void BluettiDevice::handleNotification(uint8_t *data, size_t length) {
     return;
   }
 
-  // Перевірка: чи це відповідь на запит charging mode? (1 регістр = 2 байти)
+  // Перевірка: чи це відповідь на запит окремого регістра? (1 регістр = 2 байти)
   if (dataLength == 2 && length == 7) {
-    // Це відповідь на читання 1 регістра (charging mode)
-    uint16_t chargingModeRaw = (data[3] << 8) | data[4];
-    if (chargingModeRaw <= 2) {
-      status->chargingSpeed = (uint8_t)chargingModeRaw;
-      const char* modeNames[] = {"Standard", "Silent", "Turbo"};
-      Serial.printf("[Bluetti] 🔋 Current charging mode: %s (%d)\n", modeNames[status->chargingSpeed], status->chargingSpeed);
+    uint16_t valueRaw = (data[3] << 8) | data[4];
+    
+    // Визначаємо за останнім запитаним регістром
+    if (lastSingleRegisterRequested == 0x0BF9) {
+      // Charging mode
+      if (valueRaw <= 2) {
+        status->chargingSpeed = (uint8_t)valueRaw;
+        const char* modeNames[] = {"Standard", "Silent", "Turbo"};
+        Serial.printf("[Bluetti] 🔋 Charging mode: %s (%d)\n", modeNames[status->chargingSpeed], status->chargingSpeed);
+      }
+    } else if (lastSingleRegisterRequested == 0x0BC3) {
+      // ECO Mode
+      status->ecoMode = (valueRaw == 1);
+      Serial.printf("[Bluetti] 🌿 ECO mode: %s\n", status->ecoMode ? "ON" : "OFF");
+    } else if (lastSingleRegisterRequested == 0x0BC6) {
+      // Power Lifting
+      status->powerLifting = (valueRaw == 1);
+      Serial.printf("[Bluetti] ⚡ Power Lifting: %s\n", status->powerLifting ? "ON" : "OFF");
+    } else if (lastSingleRegisterRequested == 0x0BBA) {
+      // LED Mode
+      if (valueRaw >= 1 && valueRaw <= 4) {
+        status->ledMode = (uint8_t)valueRaw;
+        const char* ledNames[] = {"", "Low", "High", "SOS", "Off"};
+        Serial.printf("[Bluetti] 💡 LED mode: %s (%d)\n", ledNames[valueRaw], status->ledMode);
+      }
+    } else if (lastSingleRegisterRequested == 0x0BC4) {
+      // ECO Shutdown
+      if (valueRaw >= 1 && valueRaw <= 4) {
+        status->ecoShutdown = (uint8_t)valueRaw;
+        Serial.printf("[Bluetti] ⏰ ECO shutdown: %dh\n", status->ecoShutdown);
+      }
     }
     return;
   }

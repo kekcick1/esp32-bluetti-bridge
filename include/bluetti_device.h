@@ -22,6 +22,11 @@ public:
     bool setACOutput(bool state);
     bool setDCOutput(bool state);
     bool setChargingSpeed(uint8_t speed); // 0=Standard, 1=Silent, 2=Turbo
+    bool setEcoMode(bool state);
+    bool setPowerLifting(bool state);
+    bool setLedMode(uint8_t mode);      // 1=Low, 2=High, 3=SOS, 4=Off
+    bool setEcoShutdown(uint8_t hours); // 1..4 години
+    bool powerOff();
 
     uint8_t getBatteryLevel() const;
     int getACOutputPower() const;
@@ -32,6 +37,10 @@ public:
     float getTemperature() const;
     float getBatteryVoltage() const;
     uint8_t getChargingSpeed() const; // Отримати поточний режим зарядки
+    bool getEcoMode() const;
+    bool getPowerLifting() const;
+    uint8_t getLedMode() const;
+    uint8_t getEcoShutdown() const;
     
     // Налаштування інтервалу опитування (мс)
     void setUpdateInterval(unsigned long intervalMs);
@@ -53,14 +62,19 @@ private:
     uint8_t cachedBattery;
     int cachedAcPower;
     int cachedDcPower;
-    int cachedInputPower;
+    uint8_t cachedInputPower;
     bool cachedAcState;
     bool cachedDcState;
     unsigned long updateInterval; // Інтервал опитування в мс (за замовчуванням 4000)
     uint8_t lastRequestedPage; // Останній запитаний page (0x00 або 0x0B)
+    uint16_t lastSingleRegisterRequested = 0; // Останній одноразовий запитаний регістр
+    uint8_t featurePollIndex = 0; // Черга опитування додаткових функцій
 
     bool setupCharacteristics();
     bool sendCommand(const uint8_t* data, size_t length);
+    bool writeSingleRegister(uint16_t reg, uint16_t value);
+    void requestRegister(uint16_t reg);
+    void pollFeatureState();
     void requestStatus();
     void requestChargingMode(); // Запит поточного режиму зарядки
     void handleNotification(uint8_t* data, size_t length);
