@@ -219,13 +219,12 @@ String WebServerManager::buildHtml() {
     
     // Частина 3: AC/DC/Input Power
     html += F("var acText=(d.ac_state?'ON':'OFF')+' '+d.ac_power+'W';");
-    html += F("if(d.ac_input_power>d.ac_power+5)acText+=' (⚡'+d.ac_input_power+'W)';");
-    html += F("else if(d.ac_state&&d.ac_input_power<=5&&d.ac_power>5)acText+=' (🔌UPS)';");
+    html += F("if(d.ac_input_power>5)acText+=' (⚡'+d.ac_input_power+'W)';");
     html += F("document.getElementById('ac').textContent=acText;");
     html += F("var dcText=(d.dc_state?'ON':'OFF')+' '+d.dc_power+'W';");
     html += F("if(d.dc_input_power>d.dc_power+5)dcText+=' (⚡'+d.dc_input_power+'W)';");
     html += F("document.getElementById('dc').textContent=dcText;");
-    html += F("var inputText=d.input_power+'W';if(d.ac_state&&d.ac_input_power<=5&&d.ac_power>5)inputText+=' (UPS режим)';");
+    html += F("var inputText=d.input_power+'W';");
     html += F("document.getElementById('ip').textContent=inputText;");
     
     // Частина 4: New Features Display

@@ -1148,52 +1148,54 @@ void BluettiDevice::handleNotification(uint8_t *data, size_t length) {
   // 2. Battery SOC (регістр 0x0010)
   // Регістр 0x0010 = offset 3 + (0x10 - 0x0A) × 2 = 3 + 6 × 2 = 15 (байти 15-16)
   // Значення 1019 = 101.9% → обмежуємо до 100%
-  int batteryReg = -1;
-  uint16_t batteryValue = 0;
-  
-  // Спробуємо регістр 0x0010 (offset 15-16)
+  int batteryRegOffset = -1;
+  uint16_t batteryReg0010 = 0;
+  uint16_t batteryReg002B = 0;
+
+  // Читаємо обидва потенційні регістри SoC
   if (length >= 17) {
-    batteryValue = (data[15] << 8) | data[16];
-    if (batteryValue > 100 && batteryValue <= 1100) {
-      // Формат ×10 (1019 = 101.9%)
-      batteryReg = 15;
-      cachedBattery = batteryValue / 10;
-      status->batteryRaw = batteryValue;
-    } else if (batteryValue > 0 && batteryValue <= 100) {
-      // Прямий відсоток
-      batteryReg = 15;
-      cachedBattery = batteryValue;
-      status->batteryRaw = batteryValue;
-    }
+    batteryReg0010 = (data[15] << 8) | data[16]; // 0x0010
   }
-  
-  // Якщо не знайдено, спробуємо регістр 0x002B (offset 69-70) - можливо там теж є
-  if (batteryReg == -1 && length >= 71) {
-    batteryValue = (data[69] << 8) | data[70];
-    if (batteryValue > 0 && batteryValue <= 100) {
-      batteryReg = 69;
-      cachedBattery = batteryValue;
-      status->batteryRaw = batteryValue;
-    }
+  if (length >= 71) {
+    batteryReg002B = (data[69] << 8) | data[70]; // 0x002B
   }
-  
-  // ВАЖЛИВО: Обмежуємо батарею до 100% максимум
-  if (cachedBattery > 100) {
-    cachedBattery = 100;
+
+  // Основна логіка: віддаємо перевагу 0x002B, якщо він у межах 0-100%.
+  // У польових логах саме 0x002B змінюється (84→85), тоді як 0x0010 часто «залипає» на 1019.
+  bool reg002BValid = (batteryReg002B > 0 && batteryReg002B <= 100);
+  bool reg0010ValidPercent = (batteryReg0010 > 0 && batteryReg0010 <= 100);
+  bool reg0010ValidX10 = (batteryReg0010 > 100 && batteryReg0010 <= 1100);
+
+  if (reg002BValid) {
+    cachedBattery = batteryReg002B;
+    batteryRegOffset = 69; // offset у відповіді (0x002B)
+    status->batteryRaw = batteryReg002B;
+  } else if (reg0010ValidX10) {
+    cachedBattery = batteryReg0010 / 10;
+    batteryRegOffset = 15; // offset у відповіді (0x0010)
+    status->batteryRaw = batteryReg0010;
+  } else if (reg0010ValidPercent) {
+    cachedBattery = batteryReg0010;
+    batteryRegOffset = 15;
+    status->batteryRaw = batteryReg0010;
   }
-  
-  if (batteryReg == -1) {
+
+  // Обмежуємо до 0-100
+  if (cachedBattery > 100) cachedBattery = 100;
+
+  if (batteryRegOffset == -1) {
     cachedBattery = 100;
     status->batteryRaw = 1000;
     Serial.println("[Bluetti] ⚠️  Battery not detected, using default 100%");
   } else {
-    // Якщо raw > 100, то це формат ×10 (наприклад 1019 = 101.9%)
-    if (status->batteryRaw > 100) {
-      Serial.printf("[Bluetti] Батарея: %d%% (raw: %d ÷10, capped at 100%%)\n", 
-                    cachedBattery, status->batteryRaw);
-    } else {
-      Serial.printf("[Bluetti] Батарея: %d%% (raw: %d, reg offset: %d)\n", 
-                    cachedBattery, status->batteryRaw, batteryReg);
+    Serial.printf("[Bluetti] Батарея: %d%% (reg 0x%04X raw: %d%s)\n",
+                  cachedBattery,
+                  (batteryRegOffset == 69) ? 0x002B : 0x0010,
+                  status->batteryRaw,
+                  reg0010ValidX10 ? " ÷10" : "");
+    if (reg002BValid && reg0010ValidX10) {
+      Serial.printf("[Bluetti]     Debug: reg0x0010=%d, reg0x002B=%d -> using 0x002B as SoC\n",
+                    batteryReg0010, batteryReg002B);
     }
   }
   
