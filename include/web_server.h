@@ -27,6 +27,7 @@ private:
     void handleUpdateProgress(AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final);
     void handleSetACOutput(AsyncWebServerRequest *request);
     void handleSetDCOutput(AsyncWebServerRequest *request);
+    void handleSetChargingSpeed(AsyncWebServerRequest *request);
 };
 
 #endif

@@ -121,6 +121,7 @@ bool MQTTHandler::ensureConnection() {
       // Підписуємося на команди від Home Assistant
       mqttClient.subscribe("homeassistant/bluetti/eb3a/ac_output/set");
       mqttClient.subscribe("homeassistant/bluetti/eb3a/dc_output/set");
+      mqttClient.subscribe("homeassistant/bluetti/eb3a/charging_speed/set");
       Serial.println("[MQTT] ✅ Subscribed to control commands");
       
       yield();
@@ -180,10 +181,30 @@ void MQTTHandler::publishStatus() {
   snprintf(value, sizeof(value), "%u", bluetti->getInputPower());
   mqttClient.publish("homeassistant/bluetti/eb3a/input_power", value, true);
   
+  // Температура (якщо доступна)
+  float temp = bluetti->getTemperature();
+  if (temp > 0 && temp < 100) {
+    snprintf(value, sizeof(value), "%.1f", temp);
+    mqttClient.publish("homeassistant/bluetti/eb3a/temperature", value, true);
+  }
+  
+  // Напруга батареї
+  float voltage = bluetti->getBatteryVoltage();
+  if (voltage > 0) {
+    snprintf(value, sizeof(value), "%.1f", voltage);
+    mqttClient.publish("homeassistant/bluetti/eb3a/voltage", value, true);
+  }
+  
   mqttClient.publish("homeassistant/bluetti/eb3a/ac_output/state",
                      bluetti->getACOutputState() ? "ON" : "OFF", true);
   mqttClient.publish("homeassistant/bluetti/eb3a/dc_output/state",
                      bluetti->getDCOutputState() ? "ON" : "OFF", true);
+  
+  // Charging speed
+  const char* speedNames[] = {"Standard", "Silent", "Turbo"};
+  uint8_t speedIdx = status->chargingSpeed;
+  if (speedIdx > 2) speedIdx = 0;
+  mqttClient.publish("homeassistant/bluetti/eb3a/charging_speed", speedNames[speedIdx], true);
 }
 
 void MQTTHandler::publishDiscovery() {
@@ -267,6 +288,28 @@ void MQTTHandler::publishDiscovery() {
   Serial.printf("[MQTT] Input Power config: %s (size: %d)\n", result ? "✅" : "❌", strlen(buffer));
   yield();
 
+  // Temperature - прибрано (EB3A не передає температуру через BLE)
+  mqttClient.publish("homeassistant/sensor/bluetti_eb3a/temperature/config", "", true);
+  yield();
+
+  // 4b. Battery Voltage sensor
+  doc.clear();
+  doc["name"] = "Bluetti Battery Voltage";
+  doc["state_topic"] = "homeassistant/bluetti/eb3a/voltage";
+  doc["unit_of_measurement"] = "V";
+  doc["device_class"] = "voltage";
+  doc["state_class"] = "measurement";
+  doc["unique_id"] = "bluetti_eb3a_voltage";
+  device = doc["device"].to<JsonObject>();
+  device["identifiers"][0] = "bluetti_eb3a";
+  device["manufacturer"] = "Bluetti";
+  device["model"] = "EB3A";
+  device["name"] = "Bluetti EB3A";
+  serializeJson(doc, buffer);
+  result = mqttClient.publish("homeassistant/sensor/bluetti_eb3a/voltage/config", buffer, true);
+  Serial.printf("[MQTT] Voltage config: %s (size: %d)\n", result ? "✅" : "❌", strlen(buffer));
+  yield();
+
   // 5. AC Output switch
   doc.clear();
   doc["name"] = "Bluetti AC Output";
@@ -299,7 +342,27 @@ void MQTTHandler::publishDiscovery() {
   Serial.printf("[MQTT] DC Switch config: %s (size: %d)\n", result ? "✅" : "❌", strlen(buffer));
   yield();
 
-  Serial.println("[MQTT] ✅ Published 6 entities to Home Assistant");
+  // 6. Charging Speed select
+  doc.clear();
+  doc["name"] = "Bluetti Charging Speed";
+  doc["state_topic"] = "homeassistant/bluetti/eb3a/charging_speed";
+  doc["command_topic"] = "homeassistant/bluetti/eb3a/charging_speed/set";
+  doc["unique_id"] = "bluetti_eb3a_charging_speed";
+  JsonArray options = doc["options"].to<JsonArray>();
+  options.add("Standard");
+  options.add("Silent");
+  options.add("Turbo");
+  device = doc["device"].to<JsonObject>();
+  device["identifiers"][0] = "bluetti_eb3a";
+  device["manufacturer"] = "Bluetti";
+  device["model"] = "EB3A";
+  device["name"] = "Bluetti EB3A";
+  serializeJson(doc, buffer);
+  result = mqttClient.publish("homeassistant/select/bluetti_eb3a/charging_speed/config", buffer, true);
+  Serial.printf("[MQTT] Charging Speed config: %s (size: %d)\n", result ? "✅" : "❌", strlen(buffer));
+  yield();
+
+  Serial.println("[MQTT] ✅ Published 7 entities to Home Assistant");
 }
 
 void MQTTHandler::onMessage(char *topic, byte *payload, unsigned int length) {
@@ -312,9 +375,21 @@ void MQTTHandler::onMessage(char *topic, byte *payload, unsigned int length) {
   // Команди від Home Assistant
   if (strcmp(topic, "homeassistant/bluetti/eb3a/ac_output/set") == 0) {
     bluetti->setACOutput(message == "ON");
+    Serial.printf("[MQTT] AC Output command: %s\n", message.c_str());
     return;
   } else if (strcmp(topic, "homeassistant/bluetti/eb3a/dc_output/set") == 0) {
     bluetti->setDCOutput(message == "ON");
+    Serial.printf("[MQTT] DC Output command: %s\n", message.c_str());
+    return;
+  } else if (strcmp(topic, "homeassistant/bluetti/eb3a/charging_speed/set") == 0) {
+    uint8_t speed = 0; // Standard
+    if (message == "Silent" || message == "silent" || message == "1") {
+      speed = 1;
+    } else if (message == "Turbo" || message == "turbo" || message == "2") {
+      speed = 2;
+    }
+    Serial.printf("[MQTT] Charging speed command: %s -> %d\n", message.c_str(), speed);
+    bluetti->setChargingSpeed(speed);
     return;
   }
   

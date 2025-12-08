@@ -26,7 +26,7 @@ BluettiDevice::BluettiDevice(SystemStatus *sharedStatus)
       cachedDcPower(0), cachedInputPower(0), cachedAcState(false),
       cachedDcState(false), connecting(false), connectStartTime(0),
       connectAttempts(0), scanning(false), scanStartTime(0), scanner(nullptr),
-      updateInterval(20000) { // За замовчуванням 20 секунд
+      updateInterval(20000), lastRequestedPage(0x00) { // За замовчуванням 20 секунд
   instance = this;
 }
 
@@ -554,6 +554,8 @@ void BluettiDevice::loop() {
   // Запитуємо статус з налаштованим інтервалом
   if (millis() - lastRequest > updateInterval) {
     requestStatus();
+    delay(500); // Даємо час на отримання відповіді
+    requestChargingMode(); // Читаємо поточний режим зарядки
   }
   
   // ВАЖЛИВО: Якщо не отримуємо дані більше 10 секунд, спробуємо перепідключитися
@@ -611,22 +613,25 @@ void BluettiDevice::requestStatus() {
     }
   }
   
-  // ВАЖЛИВО: EB3A вимагає MODBUS RTU команди З CRC для BLE
-  // Згідно репозиторію читаємо з 0x000A (40 регістрів)
+  // EB3A підтримує тільки page 0x00 (Core registers)
+  // Page 0x0B не підтримується (повертає MODBUS Exception 0x02)
+  
   uint8_t cmd[8];
   cmd[0] = 0x01; // Device ID
   cmd[1] = 0x03; // Function code (Read Holding Registers)
   cmd[2] = 0x00; // Start address high
-  cmd[3] = 0x0A; // Start address low (0x000A - Page 0 Core registers)
+  cmd[3] = 0x0A; // Start address low (0x000A)
   cmd[4] = 0x00; // Quantity high
   cmd[5] = 0x28; // Quantity low (40 registers)
+  lastRequestedPage = 0x00;
   
   // Розраховуємо CRC16
   uint16_t crc = calculateCRC16(cmd, 6);
   cmd[6] = crc & 0xFF;        // CRC low byte
   cmd[7] = (crc >> 8) & 0xFF; // CRC high byte
   
-  Serial.printf("[Bluetti] Sending status request (40 regs from 0x000A) WITH CRC: ");
+  uint16_t startAddr = (cmd[2] << 8) | cmd[3];
+  Serial.printf("[Bluetti] Sending status request (40 regs from 0x%04X) WITH CRC: ", startAddr);
   for (size_t i = 0; i < sizeof(cmd); i++) {
     Serial.printf("%02X ", cmd[i]);
   }
@@ -789,6 +794,52 @@ bool BluettiDevice::setDCOutput(bool state) {
   return ok;
 }
 
+bool BluettiDevice::setChargingSpeed(uint8_t speed) {
+  // EB3A Charging Mode:
+  // 0 = Standard (268W), 1 = Silent (100W), 2 = Turbo (350W)
+  
+  if (speed > 2) {
+    Serial.println("[Bluetti] ERROR: Invalid charging speed");
+    return false;
+  }
+  
+  const char* modeNames[] = {"Standard", "Silent", "Turbo"};
+  const uint16_t powerWatts[] = {268, 100, 350};
+  
+  Serial.printf("[Bluetti] 🔋 Setting charging mode: %s (%dW)\n", modeNames[speed], powerWatts[speed]);
+  
+  // ПРАВИЛЬНИЙ регістр для EB3A: 0x0BF9 (3065 decimal) = charging_mode
+  // НЕ 0x0BBF (3007 = AC output) і НЕ 0x0BC0 (3008 = DC output)!
+  const uint16_t CHARGING_MODE_REGISTER = 0x0BF9;
+  
+  uint8_t cmd[8];
+  cmd[0] = 0x01; // Device ID
+  cmd[1] = 0x06; // Function: Write Single Register
+  cmd[2] = (CHARGING_MODE_REGISTER >> 8) & 0xFF;
+  cmd[3] = CHARGING_MODE_REGISTER & 0xFF;
+  cmd[4] = 0x00; // Value High
+  cmd[5] = speed; // Value Low: 0, 1, or 2
+  
+  uint16_t crc = calculateCRC16(cmd, 6);
+  cmd[6] = crc & 0xFF;
+  cmd[7] = (crc >> 8) & 0xFF;
+  
+  Serial.printf("[Bluetti] Writing 0x%04X (charging_mode) = %d... ", CHARGING_MODE_REGISTER, speed);
+  bool success = sendCommand(cmd, sizeof(cmd));
+  Serial.println(success ? "✅" : "❌");
+  
+  if (success) {
+    status->chargingSpeed = speed;
+    Serial.printf("[Bluetti] ✅ Charging mode: %s (%dW)\n", modeNames[speed], powerWatts[speed]);
+    
+    // Запитуємо поточний режим зарядки для підтвердження
+    delay(500);
+    requestChargingMode();
+  }
+  
+  return success;
+}
+
 uint8_t BluettiDevice::getBatteryLevel() const { return cachedBattery; }
 
 int BluettiDevice::getACOutputPower() const { return cachedAcPower; }
@@ -800,6 +851,48 @@ bool BluettiDevice::getACOutputState() const { return cachedAcState; }
 bool BluettiDevice::getDCOutputState() const { return cachedDcState; }
 
 int BluettiDevice::getInputPower() const { return cachedInputPower; }
+
+float BluettiDevice::getTemperature() const { 
+  // Температура зберігається в форматі ×10 (наприклад 250 = 25.0°C)
+  return status->temperature / 10.0f; 
+}
+
+float BluettiDevice::getBatteryVoltage() const { 
+  // Напруга зберігається в форматі ×10 (наприклад 537 = 53.7V)
+  return status->batteryVoltage / 10.0f; 
+}
+
+uint8_t BluettiDevice::getChargingSpeed() const {
+  return status->chargingSpeed;
+}
+
+void BluettiDevice::requestChargingMode() {
+  // Читання поточного режиму зарядки з регістра 0x0BF9 (3065 decimal)
+  if (!connected || !client || !client->isConnected() || !writeCharacteristic) {
+    return;
+  }
+  
+  const uint16_t CHARGING_MODE_REGISTER = 0x0BF9;
+  
+  uint8_t cmd[8];
+  cmd[0] = 0x01; // Device ID
+  cmd[1] = 0x03; // Function code: Read Holding Registers
+  cmd[2] = (CHARGING_MODE_REGISTER >> 8) & 0xFF;
+  cmd[3] = CHARGING_MODE_REGISTER & 0xFF;
+  cmd[4] = 0x00; // Quantity High
+  cmd[5] = 0x01; // Quantity Low (1 register)
+  
+  uint16_t crc = calculateCRC16(cmd, 6);
+  cmd[6] = crc & 0xFF;
+  cmd[7] = (crc >> 8) & 0xFF;
+  
+  Serial.print("[Bluetti] Requesting charging mode from 0x0BF9... ");
+  if (sendCommand(cmd, sizeof(cmd))) {
+    Serial.println("✅");
+  } else {
+    Serial.println("❌");
+  }
+}
 
 void BluettiDevice::handleNotification(uint8_t *data, size_t length) {
   // ВАЖЛИВО: Ця функція викликається коли Bluetti відправляє дані через notifications
@@ -821,22 +914,36 @@ void BluettiDevice::handleNotification(uint8_t *data, size_t length) {
     return;
   }
   
-  // Перевіряємо на помилку MODBUS (0x83 = 0x03 + 0x80)
-  if (data[0] == 0x01 && data[1] == 0x83) {
-    Serial.printf("[Bluetti] ERROR: MODBUS Exception received: ");
+  // Перевіряємо на помилку MODBUS (0x83 = 0x03 + 0x80, 0x86 = 0x06 + 0x80)
+  if (data[0] == 0x01 && (data[1] == 0x83 || data[1] == 0x86)) {
+    uint8_t exceptionCode = (length >= 3) ? data[2] : 0;
+    Serial.printf("[Bluetti] ERROR: MODBUS Exception received (code 0x%02X): ", data[1]);
     for (size_t i = 0; i < length && i < 10; i++) {
       Serial.printf("%02X ", data[i]);
     }
     Serial.println();
+    Serial.printf("[Bluetti] Exception code: 0x%02X\n", exceptionCode);
     Serial.println("[Bluetti] 💡 This usually means:");
-    Serial.println("[Bluetti]    1. Command format is wrong (maybe no CRC needed?)");
-    Serial.println("[Bluetti]    2. Register address is invalid");
-    Serial.println("[Bluetti]    3. Device doesn't support this function");
+    Serial.println("[Bluetti]    1. Register address is invalid or not supported");
+    Serial.println("[Bluetti]    2. Device doesn't support this function");
+    Serial.println("[Bluetti]    3. Register is read-only");
+    // Не повертаємося, можливо це відповідь на команду зарядки
+    // Але не обробляємо як дані статусу
+    if (data[1] == 0x86) {
+      // Це відповідь на Write Single Register (0x06) - можливо команда зарядки не підтримується
+      Serial.println("[Bluetti] ⚠️  Charging speed command may not be supported on this device");
+    }
+    return;
+  }
+  
+  // 0x06 = write single register response (OK), 0x03 = read response
+  if (data[0] == 0x01 && data[1] == 0x06) {
+    Serial.println("[Bluetti] ✅ Write command acknowledged");
     return;
   }
   
   if (data[0] != 0x01 || data[1] != 0x03) {
-    Serial.printf("[Bluetti] WARNING: Unexpected header: data[0]=%02X, data[1]=%02X (expected 01 03)\n", data[0], data[1]);
+    Serial.printf("[Bluetti] WARNING: Unexpected header: data[0]=%02X, data[1]=%02X (expected 01 03 or 01 06)\n", data[0], data[1]);
     Serial.printf("[Bluetti] Full response: ");
     for (size_t i = 0; i < length && i < 20; i++) {
       Serial.printf("%02X ", data[i]);
@@ -851,45 +958,27 @@ void BluettiDevice::handleNotification(uint8_t *data, size_t length) {
     return;
   }
 
-  // EB3A MODBUS структура від адреси 0x0006:
-  // Байти 11-14: "EB3A" (0x45 0x42 0x33 0x41)
-  // Байти 23-30: можливо дані (0x03FB=1019, 0xCBB8=52152, 0x5FA6=24486, 0x0219=537)
-  
-  Serial.println("[Bluetti] ========================================\n");
-  
-  // ДІАГНОСТИКА: Виводимо всі 40 регістрів для пошуку AC/DC
-  Serial.println("[Bluetti] === FULL 40 REGISTER DUMP (AC=ON test) ===");
-  for (int i = 0; i < 40 && (3 + i*2 + 1) < length; i++) {
-    uint16_t regVal = (data[3 + i*2] << 8) | data[3 + i*2 + 1];
-    Serial.printf("[Bluetti] Reg[%2d] offset %2d: %5d (0x%04X)", i, 3+i*2, regVal, regVal);
-    if (regVal > 0 && regVal < 1000) {
-      Serial.printf(" <-- %dW?", regVal);
+  // Перевірка: чи це відповідь на запит charging mode? (1 регістр = 2 байти)
+  if (dataLength == 2 && length == 7) {
+    // Це відповідь на читання 1 регістра (charging mode)
+    uint16_t chargingModeRaw = (data[3] << 8) | data[4];
+    if (chargingModeRaw <= 2) {
+      status->chargingSpeed = (uint8_t)chargingModeRaw;
+      const char* modeNames[] = {"Standard", "Silent", "Turbo"};
+      Serial.printf("[Bluetti] 🔋 Current charging mode: %s (%d)\n", modeNames[status->chargingSpeed], status->chargingSpeed);
     }
-    Serial.println();
+    return;
   }
+
+  // EB3A MODBUS структура від адреси 0x000A (40 registers), response starts at offset 3
+  // Зберігаємо всі регістри для аналізу
+  for (int i = 0; i < 40 && (3 + i*2 + 1) < (int)length; i++) {
+    status->registers[i] = (data[3 + i*2] << 8) | data[3 + i*2 + 1];
+  }
+  
+  Serial.println("\n[Bluetti] ========================================");
+  Serial.println("[Bluetti] === ВСІ ДАНІ BLUETTI ===");
   Serial.println("[Bluetti] ========================================");
-  
-  // Шукаємо Battery SOC автоматично (має бути ~1000-1100 для 100%)
-  int batteryReg = -1;
-  uint16_t batteryValue = 0;
-  
-  // Reg@69 (offset 69): Battery SOC (0-100%)
-  if (length >= 71) {
-    batteryValue = (data[69] << 8) | data[70];
-    if (batteryValue > 0 && batteryValue <= 100) {
-      // Прямий відсоток (75 = 75%, 99 = 99%)
-      batteryReg = 69;
-      cachedBattery = batteryValue;
-      Serial.printf("[Bluetti] ✅ Battery: %d%%\n", cachedBattery);
-    } else if (batteryValue > 100) {
-      // Можливо формат ×10? (спробуємо)
-      batteryReg = 69;
-      cachedBattery = batteryValue / 10;
-      if (cachedBattery > 100) cachedBattery = 100;
-      Serial.printf("[Bluetti] ✅ Battery: %d (raw=%d, divided by 10 = %d%%)\n", 
-                    batteryValue, batteryValue, cachedBattery);
-    }
-  }
   
   // ✅ CORRECT REGISTER MAPPING (from giovanne123/EB3A_Bluetti_ESP32_HA):
   // Reading from address 0x000A (40 registers), response starts at offset 3
@@ -900,63 +989,256 @@ void BluettiDevice::handleNotification(uint8_t *data, size_t length) {
   // AC State:  0x30 = 3 + (0x30-0x0A)×2 = 3 + 38×2 = 79 → 0=OFF, 1=ON
   // DC State:  0x31 = 3 + (0x31-0x0A)×2 = 3 + 39×2 = 81 → 0=OFF, 1=ON
   
-  // Parse battery (already done above)
+  // 1. Модель пристрою (регістри 0x000A-0x000B)
+  // Регістр 0x000A = offset 3 + (0x0A - 0x0A) * 2 = 3 (байти 3-4)
+  // Регістр 0x000B = offset 3 + (0x0B - 0x0A) * 2 = 5 (байти 5-6)
+  // Але згідно документації "EB3A" на offsets 11-14, що відповідає регістрам 0x000A-0x000B
+  // Тобто: data[11]=0x45, data[12]=0x42, data[13]=0x33, data[14]=0x41
+  // Але це означає, що регістр 0x000A знаходиться на offset 11-12
+  // Перевіримо обидва варіанти
+  if (length >= 15) {
+    // Спробуємо offsets 11-14 (згідно документації)
+    if (data[11] == 0x45 && data[12] == 0x42) {
+      status->modelName[0] = (char)data[11];
+      status->modelName[1] = (char)data[12];
+      status->modelName[2] = (char)data[13];
+      status->modelName[3] = (char)data[14];
+      status->modelName[4] = '\0';
+    } else {
+      // Спробуємо регістри 0x000A-0x000B (offsets 3-6)
+      uint16_t reg0A = (data[3] << 8) | data[4];
+      uint16_t reg0B = (data[5] << 8) | data[6];
+      status->modelName[0] = (char)((reg0A >> 8) & 0xFF);
+      status->modelName[1] = (char)(reg0A & 0xFF);
+      status->modelName[2] = (char)((reg0B >> 8) & 0xFF);
+      status->modelName[3] = (char)(reg0B & 0xFF);
+      status->modelName[4] = '\0';
+    }
+    Serial.printf("[Bluetti] Модель: %s\n", status->modelName);
+  }
+  
+  // 2. Battery SOC (регістр 0x0010)
+  // Регістр 0x0010 = offset 3 + (0x10 - 0x0A) × 2 = 3 + 6 × 2 = 15 (байти 15-16)
+  // Значення 1019 = 101.9% → обмежуємо до 100%
+  int batteryReg = -1;
+  uint16_t batteryValue = 0;
+  
+  // Спробуємо регістр 0x0010 (offset 15-16)
+  if (length >= 17) {
+    batteryValue = (data[15] << 8) | data[16];
+    if (batteryValue > 100 && batteryValue <= 1100) {
+      // Формат ×10 (1019 = 101.9%)
+      batteryReg = 15;
+      cachedBattery = batteryValue / 10;
+      status->batteryRaw = batteryValue;
+    } else if (batteryValue > 0 && batteryValue <= 100) {
+      // Прямий відсоток
+      batteryReg = 15;
+      cachedBattery = batteryValue;
+      status->batteryRaw = batteryValue;
+    }
+  }
+  
+  // Якщо не знайдено, спробуємо регістр 0x002B (offset 69-70) - можливо там теж є
+  if (batteryReg == -1 && length >= 71) {
+    batteryValue = (data[69] << 8) | data[70];
+    if (batteryValue > 0 && batteryValue <= 100) {
+      batteryReg = 69;
+      cachedBattery = batteryValue;
+      status->batteryRaw = batteryValue;
+    }
+  }
+  
+  // ВАЖЛИВО: Обмежуємо батарею до 100% максимум
+  if (cachedBattery > 100) {
+    cachedBattery = 100;
+  }
+  
   if (batteryReg == -1) {
     cachedBattery = 100;
-    Serial.println("[Bluetti] ⚠️  Battery not auto-detected, using 100%");
+    status->batteryRaw = 1000;
+    Serial.println("[Bluetti] ⚠️  Battery not detected, using default 100%");
+  } else {
+    // Якщо raw > 100, то це формат ×10 (наприклад 1019 = 101.9%)
+    if (status->batteryRaw > 100) {
+      Serial.printf("[Bluetti] Батарея: %d%% (raw: %d ÷10, capped at 100%%)\n", 
+                    cachedBattery, status->batteryRaw);
+    } else {
+      Serial.printf("[Bluetti] Батарея: %d%% (raw: %d, reg offset: %d)\n", 
+                    cachedBattery, status->batteryRaw, batteryReg);
+    }
   }
   
-  // Parse input power (register 0x24=DC_INPUT, 0x25=AC_INPUT at offset 55-58)
-  int dcInputPower = 0;
-  int acInputPower = 0;
+  // 3. Напруга батареї (регістр 0x0013)
+  // Регістр 0x0013 = offset 3 + (0x13 - 0x0A) × 2 = 3 + 9 × 2 = 21 (байти 21-22)
+  if (length >= 23) {
+    status->batteryVoltage = (data[21] << 8) | data[22];
+    // Напруга в форматі ×10 (537 = 53.7V) або ×100 (537 = 5.37V)
+    // Зазвичай для EB3A це ×10, тобто 537 = 53.7V
+    Serial.printf("[Bluetti] Напруга батареї: %d (%.1fV)\n", 
+                  status->batteryVoltage, status->batteryVoltage / 10.0f);
+  }
+  
+  // 4. Температура
+  // EB3A зберігає температуру в регістрах page 0x00 в форматі Кельвіни або прямі °C × 10
+  // Регістр 0x0028 або 0x0029 може містити температуру для деяких моделей
+  // Формат: значення / 10 = температура в °C
+  // Або формат Кельвіни: (значення - 2731) / 10 = °C
+  status->temperature = 0; // За замовчуванням невідомо
+  
+  if (length >= 35) {
+    // Спробуємо кілька відомих регістрів для температури
+    // Регістр 0x0028 (offset 63-64) - часто використовується для внутрішньої температури
+    int tempOffset = 3 + (0x28 - 0x0A) * 2; // = 3 + 30*2 = 63
+    if (tempOffset + 1 < (int)length) {
+      uint16_t regVal = (data[tempOffset] << 8) | data[tempOffset + 1];
+      // Перевіряємо чи це розумне значення температури
+      // Формат ×10: 200-500 = 20-50°C
+      // Формат Кельвіни: 2931-3231 = 20-50°C (2731 + 200 to 2731 + 500)
+      if (regVal >= 100 && regVal <= 700) {
+        // Прямий формат ×10 (наприклад 250 = 25.0°C)
+        status->temperature = regVal;
+        Serial.printf("[Bluetti] Температура (reg 0x0028): %d (%.1f°C)\n", 
+                      status->temperature, status->temperature / 10.0f);
+      } else if (regVal >= 2731 && regVal <= 3531) {
+        // Формат Кельвіни (2731 = 0°C, 2981 = 25°C)
+        status->temperature = (regVal - 2731); // Конвертуємо в ×10 °C
+        Serial.printf("[Bluetti] Температура (reg 0x0028, Kelvin): %d K = %.1f°C\n", 
+                      regVal, status->temperature / 10.0f);
+      }
+    }
+    
+    // Якщо не знайдено в 0x0028, спробуємо 0x0029
+    if (status->temperature == 0) {
+      tempOffset = 3 + (0x29 - 0x0A) * 2; // = 3 + 31*2 = 65
+      if (tempOffset + 1 < (int)length) {
+        uint16_t regVal = (data[tempOffset] << 8) | data[tempOffset + 1];
+        if (regVal >= 100 && regVal <= 700) {
+          status->temperature = regVal;
+          Serial.printf("[Bluetti] Температура (reg 0x0029): %d (%.1f°C)\n", 
+                        status->temperature, status->temperature / 10.0f);
+        } else if (regVal >= 2731 && regVal <= 3531) {
+          status->temperature = (regVal - 2731);
+          Serial.printf("[Bluetti] Температура (reg 0x0029, Kelvin): %d K = %.1f°C\n", 
+                        regVal, status->temperature / 10.0f);
+        }
+      }
+    }
+    
+    // Якщо все ще не знайдено, шукаємо будь-яке значення в розумному діапазоні
+    if (status->temperature == 0) {
+      for (int i = 0; i < 40; i++) {
+        int offset = 3 + i * 2;
+        if (offset + 1 < (int)length) {
+          uint16_t regVal = (data[offset] << 8) | data[offset + 1];
+          // Шукаємо значення 150-500 (15-50°C в форматі ×10)
+          if (regVal >= 150 && regVal <= 500) {
+            // Пропускаємо регістри з відомими іншими значеннями
+            uint16_t regAddr = 0x000A + i;
+            if (regAddr != 0x0010 && regAddr != 0x0013 && 
+                regAddr != 0x0017 && regAddr != 0x0019 &&
+                regAddr != 0x002B) {
+              status->temperature = regVal;
+              Serial.printf("[Bluetti] Температура (reg 0x%04X): %d (%.1f°C) - можливо\n", 
+                            regAddr, status->temperature, status->temperature / 10.0f);
+              break;
+            }
+          }
+        }
+      }
+    }
+    
+    // EB3A doesn't have temperature sensors in this register page
+  }
+  
+  // 5. Input Power (регістри 0x0024=DC_INPUT, 0x0025=AC_INPUT, offsets 55-58)
   if (length >= 57) {
-    dcInputPower = (data[55] << 8) | data[56];
+    status->dcInputPower = (data[55] << 8) | data[56];
   }
   if (length >= 59) {
-    acInputPower = (data[57] << 8) | data[58];
+    status->acInputPower = (data[57] << 8) | data[58];
   }
-  cachedInputPower = dcInputPower + acInputPower;
-  if (cachedInputPower > 0) {
-    Serial.printf("[Bluetti] ✅ Input Power: %dW (DC=%dW, AC=%dW)\n", 
-                  cachedInputPower, dcInputPower, acInputPower);
-  }
+  cachedInputPower = status->dcInputPower + status->acInputPower;
+  Serial.printf("[Bluetti] Вхідна потужність: %dW (DC: %dW, AC: %dW)\n", 
+                cachedInputPower, status->dcInputPower, status->acInputPower);
   
-  // Parse AC output power (offset 59 = register 0x26)
+  // 6. AC Output Power (регістр 0x0026, offset 59-60)
   if (length >= 61) {
     cachedAcPower = (data[59] << 8) | data[60];
-    Serial.printf("[Bluetti] ✅ AC Power (offset 59): %dW\n", cachedAcPower);
+    Serial.printf("[Bluetti] AC вихідна потужність: %dW\n", cachedAcPower);
   } else {
     cachedAcPower = 0;
-    Serial.println("[Bluetti] ⚠️  AC Power offset 59 out of range");
   }
   
-  // Parse DC output power (offset 61 = register 0x27)
+  // 7. DC Output Power (регістр 0x0027, offset 61-62)
   if (length >= 63) {
     cachedDcPower = (data[61] << 8) | data[62];
-    Serial.printf("[Bluetti] ✅ DC Power (offset 61): %dW\n", cachedDcPower);
+    Serial.printf("[Bluetti] DC вихідна потужність: %dW\n", cachedDcPower);
   } else {
     cachedDcPower = 0;
-    Serial.println("[Bluetti] ⚠️  DC Power offset 61 out of range");
   }
 
-  // Parse AC output state (register 0x30 at offset 79-80, use LSB)
+  // 8. Max DC Limit (регістр 0x002B, offset 69-70)
+  // Регістр 0x002B = offset 3 + (0x2B - 0x0A) × 2 = 3 + 33 × 2 = 69
+  if (length >= 71) {
+    status->maxDcLimit = (data[69] << 8) | data[70];
+    Serial.printf("[Bluetti] Макс. DC ліміт: %dW\n", status->maxDcLimit);
+  }
+
+  // 9. AC Output State (регістр 0x0030, offset 79-80)
+  // ВАЖЛИВО: 0x0001 = ON, 0x0000 = OFF
   if (length >= 81) {
-    cachedAcState = (data[80] == 1);
-    Serial.printf("[Bluetti] ✅ AC State: %s (raw=%d at offset 80)\n", 
-                  cachedAcState ? "ON" : "OFF", data[80]);
+    uint16_t acStateReg = (data[79] << 8) | data[80];
+    cachedAcState = (acStateReg == 1);
+    Serial.printf("[Bluetti] AC вихід: %s (reg=0x%04X)\n", cachedAcState ? "УВІМКНЕНО" : "ВИМКНЕНО", acStateReg);
   } else {
     cachedAcState = (cachedAcPower > 0);
-    Serial.println("[Bluetti] ⚠️  AC State out of range, using power-based detection");
   }
   
-  // Parse DC output state (register 0x31 at offset 81-82, use LSB)
+  // 10. DC Output State (регістр 0x0031, offset 81-82)
+  // ВАЖЛИВО: 0x0001 = ON, 0x0000 = OFF
   if (length >= 83) {
-    cachedDcState = (data[82] == 1);
-    Serial.printf("[Bluetti] ✅ DC State: %s (raw=%d at offset 82)\n", 
-                  cachedDcState ? "ON" : "OFF", data[82]);
+    uint16_t dcStateReg = (data[81] << 8) | data[82];
+    cachedDcState = (dcStateReg == 1);
+    Serial.printf("[Bluetti] DC вихід: %s (reg=0x%04X)\n", cachedDcState ? "УВІМКНЕНО" : "ВИМКНЕНО", dcStateReg);
   } else {
     cachedDcState = (cachedDcPower > 0);
-    Serial.println("[Bluetti] ⚠️  DC State out of range, using power-based detection");
+  }
+  
+  // Виводимо всі регістри для аналізу
+  Serial.println("\n[Bluetti] --- Всі 40 регістрів ---");
+  for (int i = 0; i < 40; i++) {
+    uint16_t regAddr = 0x000A + i;
+    uint16_t regVal = status->registers[i];
+    Serial.printf("[Bluetti] Reg 0x%04X [%2d]: %5d (0x%04X)", regAddr, i, regVal, regVal);
+    
+    // Додаємо інтерпретацію для відомих регістрів
+    if (regAddr == 0x000A || regAddr == 0x000B) {
+      Serial.print(" [Модель]");
+    } else if (regAddr == 0x0010) {
+      Serial.print(" [Battery SOC ×10]");
+    } else if (regAddr == 0x0013) {
+      Serial.print(" [Напруга]");
+    } else if (regAddr == 0x0017) {
+      Serial.print(" [Температура?]");
+    } else if (regAddr == 0x0024) {
+      Serial.print(" [DC Input]");
+    } else if (regAddr == 0x0025) {
+      Serial.print(" [AC Input]");
+    } else if (regAddr == 0x0026) {
+      Serial.print(" [AC Output Power]");
+    } else if (regAddr == 0x0027) {
+      Serial.print(" [DC Output Power]");
+    } else if (regAddr == 0x002B) {
+      Serial.print(" [Max DC Limit]");
+    } else if (regAddr == 0x002D) {
+      Serial.print(" [DC State?]");
+    } else if (regAddr == 0x0030) {
+      Serial.print(" [AC State]");
+    } else if (regAddr == 0x0031) {
+      Serial.print(" [DC State]");
+    }
+    Serial.println();
   }
 
   // Оновлюємо статус
@@ -969,9 +1251,14 @@ void BluettiDevice::handleNotification(uint8_t *data, size_t length) {
   status->dcOutputState = cachedDcState;
   status->lastBluettiUpdate = millis();
   
-  Serial.printf("[Bluetti] Status updated: Battery=%d%%, AC=%s/%dW, DC=%s/%dW, Input=%dW\n",
-                cachedBattery, cachedAcState ? "ON" : "OFF", cachedAcPower,
-                cachedDcState ? "ON" : "OFF", cachedDcPower, cachedInputPower);
+  Serial.println("\n[Bluetti] === ПІДСУМОК ===");
+  Serial.printf("[Bluetti] Батарея: %d%%\n", cachedBattery);
+  Serial.printf("[Bluetti] Напруга: %d (%.1fV)\n", status->batteryVoltage, status->batteryVoltage / 10.0f);
+  Serial.printf("[Bluetti] Вхід: %dW (DC: %dW, AC: %dW)\n", cachedInputPower, status->dcInputPower, status->acInputPower);
+  Serial.printf("[Bluetti] AC вихід: %s, %dW\n", cachedAcState ? "УВІМКНЕНО" : "ВИМКНЕНО", cachedAcPower);
+  Serial.printf("[Bluetti] DC вихід: %s, %dW\n", cachedDcState ? "УВІМКНЕНО" : "ВИМКНЕНО", cachedDcPower);
+  Serial.printf("[Bluetti] Макс. DC ліміт: %dW\n", status->maxDcLimit);
+  Serial.println("[Bluetti] ========================================\n");
 }
 
 void BluettiDevice::notificationThunk(

@@ -21,6 +21,7 @@ public:
 
     bool setACOutput(bool state);
     bool setDCOutput(bool state);
+    bool setChargingSpeed(uint8_t speed); // 0=Standard, 1=Silent, 2=Turbo
 
     uint8_t getBatteryLevel() const;
     int getACOutputPower() const;
@@ -28,6 +29,9 @@ public:
     bool getACOutputState() const;
     bool getDCOutputState() const;
     int getInputPower() const;
+    float getTemperature() const;
+    float getBatteryVoltage() const;
+    uint8_t getChargingSpeed() const; // Отримати поточний режим зарядки
     
     // Налаштування інтервалу опитування (мс)
     void setUpdateInterval(unsigned long intervalMs);
@@ -53,10 +57,12 @@ private:
     bool cachedAcState;
     bool cachedDcState;
     unsigned long updateInterval; // Інтервал опитування в мс (за замовчуванням 4000)
+    uint8_t lastRequestedPage; // Останній запитаний page (0x00 або 0x0B)
 
     bool setupCharacteristics();
     bool sendCommand(const uint8_t* data, size_t length);
     void requestStatus();
+    void requestChargingMode(); // Запит поточного режиму зарядки
     void handleNotification(uint8_t* data, size_t length);
 
     static void notificationThunk(NimBLERemoteCharacteristic* characteristic,
