@@ -765,6 +765,7 @@ bool BluettiDevice::setACOutput(bool state) {
   cmd[6] = crc & 0xFF;        // CRC low byte
   cmd[7] = (crc >> 8) & 0xFF; // CRC high byte
   
+  lastWriteRegister = 0x0BBF;
   bool ok = sendCommand(cmd, sizeof(cmd));
   if (ok) {
     cachedAcState = state;
@@ -788,6 +789,7 @@ bool BluettiDevice::setDCOutput(bool state) {
   cmd[6] = crc & 0xFF;        // CRC low byte
   cmd[7] = (crc >> 8) & 0xFF; // CRC high byte
   
+  lastWriteRegister = 0x0BC0;
   bool ok = sendCommand(cmd, sizeof(cmd));
   if (ok) {
     cachedDcState = state;
@@ -826,6 +828,7 @@ bool BluettiDevice::setChargingSpeed(uint8_t speed) {
   cmd[6] = crc & 0xFF;
   cmd[7] = (crc >> 8) & 0xFF;
   
+  lastWriteRegister = CHARGING_MODE_REGISTER;
   Serial.printf("[Bluetti] Writing 0x%04X (charging_mode) = %d... ", CHARGING_MODE_REGISTER, speed);
   bool success = sendCommand(cmd, sizeof(cmd));
   Serial.println(success ? "✅" : "❌");
@@ -843,11 +846,17 @@ bool BluettiDevice::setChargingSpeed(uint8_t speed) {
 }
 
 bool BluettiDevice::setEcoMode(bool state) {
-  return writeSingleRegister(0x0BC3, state ? 1 : 0);
+  if (ecoWriteBlocked) {
+    Serial.println("[Bluetti] ECO write skipped: device rejected ECO register earlier");
+    return false;
+  }
+  constexpr uint16_t ECO_MODE_REGISTER = 0x0BF7; // 3063 decimal (eco_on)
+  return writeSingleRegister(ECO_MODE_REGISTER, state ? 1 : 0);
 }
 
 bool BluettiDevice::setPowerLifting(bool state) {
-  return writeSingleRegister(0x0BC6, state ? 1 : 0);
+  constexpr uint16_t POWER_LIFTING_REGISTER = 0x0BFA; // 3066 decimal (power_lifting_on)
+  return writeSingleRegister(POWER_LIFTING_REGISTER, state ? 1 : 0);
 }
 
 bool BluettiDevice::setLedMode(uint8_t mode) {
@@ -856,7 +865,8 @@ bool BluettiDevice::setLedMode(uint8_t mode) {
     Serial.println("[Bluetti] ERROR: Invalid LED mode (1-4)");
     return false;
   }
-  return writeSingleRegister(0x0BBA, mode);
+  constexpr uint16_t LED_MODE_REGISTER = 0x0BDA; // 3034 decimal (led_mode)
+  return writeSingleRegister(LED_MODE_REGISTER, mode);
 }
 
 bool BluettiDevice::setEcoShutdown(uint8_t hours) {
@@ -865,11 +875,13 @@ bool BluettiDevice::setEcoShutdown(uint8_t hours) {
     Serial.println("[Bluetti] ERROR: Invalid ECO shutdown hours (1-4)");
     return false;
   }
-  return writeSingleRegister(0x0BC4, hours);
+  constexpr uint16_t ECO_SHUTDOWN_REGISTER = 0x0BF8; // 3064 decimal (eco_shutdown)
+  return writeSingleRegister(ECO_SHUTDOWN_REGISTER, hours);
 }
 
 bool BluettiDevice::powerOff() {
-  return writeSingleRegister(0x0BBC, 1);
+  constexpr uint16_t POWER_OFF_REGISTER = 0x0BF4; // 3060 decimal (power_off)
+  return writeSingleRegister(POWER_OFF_REGISTER, 1);
 }
 
 uint8_t BluettiDevice::getBatteryLevel() const { return cachedBattery; }
@@ -931,6 +943,7 @@ bool BluettiDevice::writeSingleRegister(uint16_t reg, uint16_t value) {
   cmd[6] = crc & 0xFF;
   cmd[7] = (crc >> 8) & 0xFF;
   
+  lastWriteRegister = reg;
   Serial.printf("[Bluetti] Write reg 0x%04X = %d... ", reg, value);
   bool success = sendCommand(cmd, sizeof(cmd));
   Serial.println(success ? "✅" : "❌");
@@ -961,10 +974,10 @@ void BluettiDevice::requestRegister(uint16_t reg) {
 void BluettiDevice::pollFeatureState() {
   // Ротація опитування додаткових функцій (не критичні, опитуємо рідко)
   switch (featurePollIndex % 4) {
-    case 0: requestRegister(0x0BC3); break; // ECO Mode
-    case 1: requestRegister(0x0BC6); break; // Power Lifting
-    case 2: requestRegister(0x0BBA); break; // LED Mode
-    case 3: requestRegister(0x0BC4); break; // ECO Shutdown
+    case 0: requestRegister(0x0BF7); break; // ECO Mode
+    case 1: requestRegister(0x0BFA); break; // Power Lifting
+    case 2: requestRegister(0x0BDA); break; // LED Mode
+    case 3: requestRegister(0x0BF8); break; // ECO Shutdown
   }
   featurePollIndex++;
 }
@@ -1030,11 +1043,21 @@ void BluettiDevice::handleNotification(uint8_t *data, size_t length) {
     Serial.println("[Bluetti]    1. Register address is invalid or not supported");
     Serial.println("[Bluetti]    2. Device doesn't support this function");
     Serial.println("[Bluetti]    3. Register is read-only");
-    // Не повертаємося, можливо це відповідь на команду зарядки
-    // Але не обробляємо як дані статусу
     if (data[1] == 0x86) {
-      // Це відповідь на Write Single Register (0x06) - можливо команда зарядки не підтримується
-      Serial.println("[Bluetti] ⚠️  Charging speed command may not be supported on this device");
+      Serial.printf("[Bluetti] Last write register: 0x%04X\n", lastWriteRegister);
+      switch (lastWriteRegister) {
+        case 0x0BF9: Serial.println("[Bluetti] ⚠️  Charging speed may not be supported on this device"); break;
+        case 0x0BF7:
+          Serial.println("[Bluetti] ⚠️  ECO mode register not supported (will skip further ECO writes)");
+          ecoWriteBlocked = true;
+          break;
+        case 0x0BFA: Serial.println("[Bluetti] ⚠️  Power Lifting register not supported (ignored)"); break;
+        case 0x0BDA: Serial.println("[Bluetti] ⚠️  LED mode register not supported (ignored)"); break;
+        case 0x0BF8: Serial.println("[Bluetti] ⚠️  ECO shutdown register not supported (ignored)"); break;
+        case 0x0BBF: Serial.println("[Bluetti] ⚠️  AC output write rejected"); break;
+        case 0x0BC0: Serial.println("[Bluetti] ⚠️  DC output write rejected"); break;
+        default:     Serial.println("[Bluetti] ⚠️  Write rejected by device"); break;
+      }
     }
     return;
   }
@@ -1073,22 +1096,22 @@ void BluettiDevice::handleNotification(uint8_t *data, size_t length) {
         const char* modeNames[] = {"Standard", "Silent", "Turbo"};
         Serial.printf("[Bluetti] 🔋 Charging mode: %s (%d)\n", modeNames[status->chargingSpeed], status->chargingSpeed);
       }
-    } else if (lastSingleRegisterRequested == 0x0BC3) {
+    } else if (lastSingleRegisterRequested == 0x0BF7) {
       // ECO Mode
       status->ecoMode = (valueRaw == 1);
       Serial.printf("[Bluetti] 🌿 ECO mode: %s\n", status->ecoMode ? "ON" : "OFF");
-    } else if (lastSingleRegisterRequested == 0x0BC6) {
+    } else if (lastSingleRegisterRequested == 0x0BFA) {
       // Power Lifting
       status->powerLifting = (valueRaw == 1);
       Serial.printf("[Bluetti] ⚡ Power Lifting: %s\n", status->powerLifting ? "ON" : "OFF");
-    } else if (lastSingleRegisterRequested == 0x0BBA) {
+    } else if (lastSingleRegisterRequested == 0x0BDA) {
       // LED Mode
       if (valueRaw >= 1 && valueRaw <= 4) {
         status->ledMode = (uint8_t)valueRaw;
         const char* ledNames[] = {"", "Low", "High", "SOS", "Off"};
         Serial.printf("[Bluetti] 💡 LED mode: %s (%d)\n", ledNames[valueRaw], status->ledMode);
       }
-    } else if (lastSingleRegisterRequested == 0x0BC4) {
+    } else if (lastSingleRegisterRequested == 0x0BF8) {
       // ECO Shutdown
       if (valueRaw >= 1 && valueRaw <= 4) {
         status->ecoShutdown = (uint8_t)valueRaw;
