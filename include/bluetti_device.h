@@ -69,6 +69,9 @@ private:
     uint8_t lastRequestedPage; // Останній запитаний page (0x00 або 0x0B)
     uint16_t lastSingleRegisterRequested = 0; // Останній одноразовий запитаний регістр
     uint8_t featurePollIndex = 0; // Черга опитування додаткових функцій
+    uint16_t lastWriteRegister = 0; // Останній записуваний регістр (для діагностики помилок)
+    bool ecoWriteBlocked = false; // Якщо пристрій відхилив ECO регістр, більше не пишемо
+    bool ledFallbackTried = false; // Якщо 0x0BDA відхилено, пробуємо 0x0BBA один раз
 
     bool setupCharacteristics();
     bool sendCommand(const uint8_t* data, size_t length);

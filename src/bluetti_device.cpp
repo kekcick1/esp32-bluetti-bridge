@@ -851,12 +851,22 @@ bool BluettiDevice::setEcoMode(bool state) {
     return false;
   }
   constexpr uint16_t ECO_MODE_REGISTER = 0x0BF7; // 3063 decimal (eco_on)
-  return writeSingleRegister(ECO_MODE_REGISTER, state ? 1 : 0);
+  bool ok = writeSingleRegister(ECO_MODE_REGISTER, state ? 1 : 0);
+  if (ok) {
+    status->ecoMode = state; // Optimistic update for HA/state topic
+    requestRegister(ECO_MODE_REGISTER); // Confirm new state from device
+  }
+  return ok;
 }
 
 bool BluettiDevice::setPowerLifting(bool state) {
   constexpr uint16_t POWER_LIFTING_REGISTER = 0x0BFA; // 3066 decimal (power_lifting_on)
-  return writeSingleRegister(POWER_LIFTING_REGISTER, state ? 1 : 0);
+  bool ok = writeSingleRegister(POWER_LIFTING_REGISTER, state ? 1 : 0);
+  if (ok) {
+    status->powerLifting = state;
+    requestRegister(POWER_LIFTING_REGISTER);
+  }
+  return ok;
 }
 
 bool BluettiDevice::setLedMode(uint8_t mode) {
@@ -865,8 +875,21 @@ bool BluettiDevice::setLedMode(uint8_t mode) {
     Serial.println("[Bluetti] ERROR: Invalid LED mode (1-4)");
     return false;
   }
+  ledFallbackTried = false; // скидати перед записом
   constexpr uint16_t LED_MODE_REGISTER = 0x0BDA; // 3034 decimal (led_mode)
-  return writeSingleRegister(LED_MODE_REGISTER, mode);
+  Serial.printf("[Bluetti] LED set request: mode=%u (1=Low,2=High,3=SOS,4=Off) -> reg 0x%04X\n", mode, LED_MODE_REGISTER);
+  bool ok = writeSingleRegister(LED_MODE_REGISTER, mode);
+  // Деякі прошивки приймають OFF як 0. Якщо просимо OFF (4), додатково шлемо 0.
+  if (ok && mode == 4) {
+    delay(200);
+    Serial.println("[Bluetti] LED OFF: sending secondary 0 to ensure off");
+    writeSingleRegister(LED_MODE_REGISTER, 0);
+  }
+  if (ok) {
+    status->ledMode = mode;
+    requestRegister(LED_MODE_REGISTER);
+  }
+  return ok;
 }
 
 bool BluettiDevice::setEcoShutdown(uint8_t hours) {
@@ -876,7 +899,12 @@ bool BluettiDevice::setEcoShutdown(uint8_t hours) {
     return false;
   }
   constexpr uint16_t ECO_SHUTDOWN_REGISTER = 0x0BF8; // 3064 decimal (eco_shutdown)
-  return writeSingleRegister(ECO_SHUTDOWN_REGISTER, hours);
+  bool ok = writeSingleRegister(ECO_SHUTDOWN_REGISTER, hours);
+  if (ok) {
+    status->ecoShutdown = hours;
+    requestRegister(ECO_SHUTDOWN_REGISTER);
+  }
+  return ok;
 }
 
 bool BluettiDevice::powerOff() {
@@ -1052,7 +1080,14 @@ void BluettiDevice::handleNotification(uint8_t *data, size_t length) {
           ecoWriteBlocked = true;
           break;
         case 0x0BFA: Serial.println("[Bluetti] ⚠️  Power Lifting register not supported (ignored)"); break;
-        case 0x0BDA: Serial.println("[Bluetti] ⚠️  LED mode register not supported (ignored)"); break;
+        case 0x0BDA:
+          Serial.println("[Bluetti] ⚠️  LED mode register 0x0BDA rejected, trying legacy 0x0BBA once");
+          if (!ledFallbackTried) {
+            ledFallbackTried = true;
+            // Спробуємо старий регістр 0x0BBA (3034 старе зміщення)
+            writeSingleRegister(0x0BBA, status->ledMode);
+          }
+          break;
         case 0x0BF8: Serial.println("[Bluetti] ⚠️  ECO shutdown register not supported (ignored)"); break;
         case 0x0BBF: Serial.println("[Bluetti] ⚠️  AC output write rejected"); break;
         case 0x0BC0: Serial.println("[Bluetti] ⚠️  DC output write rejected"); break;

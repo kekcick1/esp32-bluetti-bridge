@@ -747,6 +747,7 @@ void WebServerManager::handleSetLedMode(AsyncWebServerRequest *request) {
         else if (modeStr == "high" || modeStr == "High" || modeStr == "2") { mode = 2; }
         else if (modeStr == "sos" || modeStr == "SOS" || modeStr == "3") { mode = 3; }
         else if (modeStr == "off" || modeStr == "Off" || modeStr == "4") { mode = 4; }
+        else if (modeStr == "on" || modeStr == "On") { mode = 2; } // convenience ON=High
         else { request->send(400, "text/plain", "Invalid mode"); return; }
         bool success = bluetti->setLedMode(mode);
         if (success) {
