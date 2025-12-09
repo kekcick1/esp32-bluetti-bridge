@@ -228,7 +228,7 @@ String WebServerManager::buildHtml() {
     html += F("document.getElementById('ip').textContent=inputText;");
     
     // Частина 4: New Features Display
-    html += F("document.getElementById('cs-text').textContent=d.charging_speed==0?'Standard':(d.charging_speed==1?'Silent':'Turbo');");
+    html += F("document.getElementById('cs-text').textContent=d.charging_speed==0?'STANDARD':(d.charging_speed==1?'SILENT':'TURBO');");
     html += F("document.getElementById('eco-text').textContent=d.eco_mode?'ON':'OFF';");
     html += F("document.getElementById('pl-text').textContent=d.power_lifting?'ON':'OFF';");
     html += F("var ledText=['','Low','High','SOS','Off'];document.getElementById('led-text').textContent=ledText[d.led_mode]||'Off';");
@@ -262,7 +262,7 @@ String WebServerManager::buildHtml() {
     html += F("csB.onclick=function(){var next=d.charging_speed==0?1:(d.charging_speed==1?2:0);");
     html += F("fetch('/charging_speed',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},");
     html += F("body:'speed='+next}).then(()=>setTimeout(u,1000));};csC.appendChild(csB);}");
-    html += F("var cs=document.getElementById('cs');if(cs)cs.textContent=d.charging_speed==0?'📊 Standard':(d.charging_speed==1?'🔇 Silent':'⚡ Turbo');");
+    html += F("var cs=document.getElementById('cs');if(cs)cs.textContent=d.charging_speed==0?'📊 STANDARD':(d.charging_speed==1?'🔇 SILENT':'⚡ TURBO');");
     html += F("}else{csC.innerHTML='';}}");
     
     // Частина 9: Toggle Button
@@ -689,7 +689,7 @@ void WebServerManager::handleSetChargingSpeed(AsyncWebServerRequest *request) {
         bool success = bluetti->setChargingSpeed(speed);
         
         if (success) {
-            const char* modeNames[] = {"Standard", "Silent", "Turbo"};
+            const char* modeNames[] = {"STANDARD", "SILENT", "TURBO"};
             Serial.printf("Charging speed set to: %s\n", modeNames[speed]);
             request->redirect("/");
         } else {
