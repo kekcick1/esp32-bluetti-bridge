@@ -554,10 +554,8 @@ void BluettiDevice::loop() {
   // Запитуємо статус з налаштованим інтервалом
   if (millis() - lastRequest > updateInterval) {
     requestStatus();
-    delay(500); // Даємо час на отримання відповіді
-    requestChargingMode(); // Читаємо поточний режим зарядки
-    delay(300);
-    pollFeatureState(); // Опитуємо додаткові функції (ротація)
+    // delay() перенесено в кінець requestStatus() після обробки відповіді
+    pollFeatureState(); // Опитуємо додаткові функції (ротація) - включає Charging Mode
   }
   
   // ВАЖЛИВО: Якщо не отримуємо дані більше 10 секунд, спробуємо перепідключитися
@@ -740,6 +738,10 @@ void BluettiDevice::requestStatus() {
       Serial.println("[Bluetti] Trying alternative methods...");
     }
   }
+  
+  // ВАЖЛИВО: Даємо час Bluetti "заспокоїтися" після обробки великого запиту
+  // перш ніж робити наступні запити окремих регістрів
+  delay(1000);
 }
 
 bool BluettiDevice::sendCommand(const uint8_t *data, size_t length) {
@@ -841,7 +843,7 @@ bool BluettiDevice::setChargingSpeed(uint8_t speed) {
     
     // Запитуємо поточний режим зарядки для підтвердження
     delay(500);
-    requestChargingMode();
+    requestRegister(CHARGING_MODE_REGISTER); // Підтвердження через стандартний requestRegister
   }
   
   return success;
@@ -853,8 +855,17 @@ bool BluettiDevice::setEcoMode(bool state) {
     return false;
   }
   constexpr uint16_t ECO_MODE_REGISTER = 0x0BF7; // 3063 decimal (eco_on)
+  
+  // Спроба 1: звичайний запис
   bool ok = writeSingleRegister(ECO_MODE_REGISTER, state ? 1 : 0);
   if (ok) {
+    delay(300); // Затримка для обробки пристроєм
+    
+    // Спроба 2: повторний запис для гарантії
+    Serial.printf("[Bluetti] ECO mode: sending confirmation write (%s)\n", state ? "ON" : "OFF");
+    writeSingleRegister(ECO_MODE_REGISTER, state ? 1 : 0);
+    delay(200);
+    
     status->ecoMode = state; // Optimistic update for HA/state topic
     requestRegister(ECO_MODE_REGISTER); // Confirm new state from device
   }
@@ -985,6 +996,21 @@ void BluettiDevice::requestRegister(uint16_t reg) {
     return;
   }
   
+  // Перевірка: чи очікуємо відповідь?
+  if (waitingForResponse) {
+    unsigned long waitTime = millis() - requestStartTime;
+    if (waitTime < 3000) { // Таймаут 3 секунди
+      // Тихо ігноруємо - запит надійде коли отримаємо відповідь
+      return; // Не надсилаємо новий запит
+    } else {
+      Serial.printf("[Bluetti] ⚠️  Response timeout after %lums, resetting...\n", waitTime);
+      waitingForResponse = false; // Скидаємо флаг після таймауту
+      lastSingleRegisterRequested = 0;
+    }
+  }
+  
+  Serial.printf("[Bluetti] 📤 Requesting register 0x%04X...\n", reg);
+  
   uint8_t cmd[8];
   cmd[0] = 0x01; // Device ID
   cmd[1] = 0x03; // Function: Read Holding Registers
@@ -999,47 +1025,24 @@ void BluettiDevice::requestRegister(uint16_t reg) {
   
   sendCommand(cmd, sizeof(cmd));
   lastSingleRegisterRequested = reg;
+  waitingForResponse = true; // Встановлюємо флаг очікування
+  requestStartTime = millis(); // Запам'ятовуємо час запиту
+  
+  Serial.printf("[Bluetti] ✅ Request sent for 0x%04X\n", reg);
 }
 
 void BluettiDevice::pollFeatureState() {
   // Ротація опитування додаткових функцій (не критичні, опитуємо рідко)
   // ВАЖЛИВО: Затримки між запитами, щоб уникнути плутанини відповідей
+  // Опитуємо тільки ОДИН регістр за виклик з великою затримкою
   switch (featurePollIndex % 5) {
     case 0: requestRegister(0x0BF7); break; // ECO Mode (3063)
-    case 1: delay(100); requestRegister(0x0BFA); break; // Power Lifting (3066)
-    case 2: delay(100); requestRegister(0x0BDA); break; // LED Mode (3034)
-    case 3: delay(100); requestRegister(0x0BF8); break; // ECO Shutdown (3064)
-    case 4: delay(100); requestRegister(0x0BF9); break; // Charging Mode (3065)
+    case 1: requestRegister(0x0BFA); break; // Power Lifting (3066)
+    case 2: requestRegister(0x0BDA); break; // LED Mode (3034)
+    case 3: requestRegister(0x0BF8); break; // ECO Shutdown (3064)
+    case 4: requestRegister(0x0BF9); break; // Charging Mode (3065)
   }
   featurePollIndex++;
-}
-
-void BluettiDevice::requestChargingMode() {
-  // Читання поточного режиму зарядки з регістра 0x0BF9 (3065 decimal)
-  if (!connected || !client || !client->isConnected() || !writeCharacteristic) {
-    return;
-  }
-  
-  const uint16_t CHARGING_MODE_REGISTER = 0x0BF9;
-  
-  uint8_t cmd[8];
-  cmd[0] = 0x01; // Device ID
-  cmd[1] = 0x03; // Function code: Read Holding Registers
-  cmd[2] = (CHARGING_MODE_REGISTER >> 8) & 0xFF;
-  cmd[3] = CHARGING_MODE_REGISTER & 0xFF;
-  cmd[4] = 0x00; // Quantity High
-  cmd[5] = 0x01; // Quantity Low (1 register)
-  
-  uint16_t crc = calculateCRC16(cmd, 6);
-  cmd[6] = crc & 0xFF;
-  cmd[7] = (crc >> 8) & 0xFF;
-  
-  Serial.print("[Bluetti] Requesting charging mode from 0x0BF9... ");
-  if (sendCommand(cmd, sizeof(cmd))) {
-    Serial.println("✅");
-  } else {
-    Serial.println("❌");
-  }
 }
 
 void BluettiDevice::handleNotification(uint8_t *data, size_t length) {
@@ -1126,9 +1129,19 @@ void BluettiDevice::handleNotification(uint8_t *data, size_t length) {
   // Перевірка: чи це відповідь на запит окремого регістра? (1 регістр = 2 байти)
   if (dataLength == 2 && length == 7) {
     uint16_t valueRaw = (data[3] << 8) | data[4];
+    uint16_t requestedReg = lastSingleRegisterRequested;
+    
+    // Перевірка: якщо lastSingleRegisterRequested == 0, ігноруємо (застаріла відповідь)
+    if (requestedReg == 0 || !waitingForResponse) {
+      Serial.printf("[Bluetti] ⚠️  Ignoring unexpected single register response: value=%d (no pending request or not waiting)\n", valueRaw);
+      return;
+    }
+    
+    Serial.printf("[Bluetti] Single register response for 0x%04X: value=%d (0x%04X)\n", 
+                  requestedReg, valueRaw, valueRaw);
     
     // Визначаємо за останнім запитаним регістром
-    if (lastSingleRegisterRequested == 0x0BF9) {
+    if (requestedReg == 0x0BF9) {
       // Charging mode (register 0x0BF9 = 3065)
       if (valueRaw <= 2) {
         status->chargingSpeed = (uint8_t)valueRaw;
@@ -1137,25 +1150,25 @@ void BluettiDevice::handleNotification(uint8_t *data, size_t length) {
       } else {
         Serial.printf("[Bluetti] ⚠️  Invalid charging mode value: %d (expected 0-2)\n", valueRaw);
       }
-    } else if (lastSingleRegisterRequested == 0x0BF7) {
+    } else if (requestedReg == 0x0BF7) {
       // ECO Mode (register 0x0BF7 = 3063)
       status->ecoMode = (valueRaw == 1);
       Serial.printf("[Bluetti] 🌿 ECO mode: %s (reg=0x0BF7, value=%d)\n", status->ecoMode ? "ON" : "OFF", valueRaw);
       if (valueRaw != 0 && valueRaw != 1) {
         Serial.printf("[Bluetti] ⚠️  Unexpected ECO mode value: %d\n", valueRaw);
       }
-    } else if (lastSingleRegisterRequested == 0x0BFA) {
+    } else if (requestedReg == 0x0BFA) {
       // Power Lifting
       status->powerLifting = (valueRaw == 1);
       Serial.printf("[Bluetti] ⚡ Power Lifting: %s\n", status->powerLifting ? "ON" : "OFF");
-    } else if (lastSingleRegisterRequested == 0x0BDA) {
+    } else if (requestedReg == 0x0BDA) {
       // LED Mode
       if (valueRaw >= 1 && valueRaw <= 4) {
         status->ledMode = (uint8_t)valueRaw;
         const char* ledNames[] = {"", "Low", "High", "SOS", "Off"};
         Serial.printf("[Bluetti] 💡 LED mode: %s (%d)\n", ledNames[valueRaw], status->ledMode);
       }
-    } else if (lastSingleRegisterRequested == 0x0BF8) {
+    } else if (requestedReg == 0x0BF8) {
       // ECO Shutdown (register 0x0BF8 = 3064)
       if (valueRaw >= 1 && valueRaw <= 4) {
         status->ecoShutdown = (uint8_t)valueRaw;
@@ -1166,8 +1179,13 @@ void BluettiDevice::handleNotification(uint8_t *data, size_t length) {
     } else {
       // Невідомий регістр - виводимо для дебагу
       Serial.printf("[Bluetti] 📊 Single register 0x%04X response: %d (0x%04X)\n", 
-                    lastSingleRegisterRequested, valueRaw, valueRaw);
+                    requestedReg, valueRaw, valueRaw);
     }
+    
+    // ВАЖЛИВО: Очищаємо lastSingleRegisterRequested після обробки
+    lastSingleRegisterRequested = 0;
+    waitingForResponse = false; // Скидаємо флаг очікування
+    // Успішна обробка - готові до наступного запиту
     return;
   }
 

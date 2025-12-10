@@ -188,6 +188,9 @@ String WebServerManager::buildHtml() {
     // Частина 1: Header + CSS
     html += F("<!DOCTYPE html><html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>ESP32 Monitor</title>");
     html += F("<style>body{font-family:Arial;margin:0;padding:12px;background:#f5f5f5;}.c{max-width:800px;margin:0 auto;}");
+    html += F(".menu{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 12px 0;}");
+    html += F(".menu a{background:#007bff;color:#fff;text-decoration:none;padding:6px 10px;border-radius:6px;font-size:13px;font-weight:bold;}");
+    html += F(".menu a:hover{opacity:0.9;}");
     html += F(".card{background:#fff;padding:16px;border-radius:8px;margin-bottom:12px;box-shadow:0 2px 4px rgba(0,0,0,0.1);}");
     html += F("h1{font-size:20px;margin:0 0 12px 0;color:#333;}h2{font-size:16px;margin:0 0 8px 0;color:#555;border-bottom:1px solid #eee;padding-bottom:6px;}");
     html += F(".g{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;margin-top:8px;}");
@@ -198,6 +201,7 @@ String WebServerManager::buildHtml() {
     html += F("button{width:100%;padding:10px;border:none;border-radius:6px;font-size:14px;margin-top:8px;cursor:pointer;font-weight:bold;}");
     html += F(".btn-s{background:#28a745;color:#fff;}.btn-d{background:#dc3545;color:#fff;}");
     html += F(".btn-sm{background:#2196F3;color:#fff;padding:4px 8px;font-size:11px;width:auto;margin:0 0 0 8px;}");
+    html += F(".sel{background:#fff;border:1px solid #ddd;border-radius:4px;padding:4px 8px;font-size:12px;cursor:pointer;margin:0 0 0 8px;color:#333;}");
     html += F(".btn-w{background:#ffc107;color:#000;}.btn-eco{background:#4CAF50;color:#fff;padding:8px;margin-top:4px;}");
     html += F(".btn-power{background:#F44336;color:#fff;padding:8px;margin-top:4px;}button:hover{opacity:0.9;}");
     html += F("select{padding:4px 8px;font-size:11px;border-radius:4px;margin-left:8px;}</style>");
@@ -240,29 +244,27 @@ String WebServerManager::buildHtml() {
     html += F("document.getElementById('mh').textContent=Math.floor(d.max_heap/1024)+' KB';");
     html += F("document.getElementById('cf').textContent=d.cpu_freq+' MHz';");
     
-    // Частина 6: Dynamic Buttons (AC)
+    // Частина 6: Dynamic Buttons (AC) - зберігаємо стан у data-атрибуті
     html += F("var acC=document.getElementById('acb-container');if(acC){if(d.bluetti_connected){");
-    html += F("if(!document.getElementById('acb')){var acB=document.createElement('button');acB.id='acb';acB.className='btn-sm';");
-    html += F("acB.onclick=function(){fetch('/ac_output',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},");
-    html += F("body:'state='+(d.ac_state?'off':'on')}).then(()=>setTimeout(u,1000));};acC.appendChild(acB);}");
-    html += F("var ac=document.getElementById('acb');if(ac)ac.textContent=d.ac_state?'🔴 Вимк':'🟢 Увімк';");
-    html += F("}else{acC.innerHTML='';}}");
+    html += F("if(!document.getElementById('acb')){var acB=document.createElement('button');acB.id='acb';acB.className='btn-sm';acC.appendChild(acB);}");
+    html += F("var ac=document.getElementById('acb');if(ac){ac.textContent=d.ac_state?'🔴 Вимк':'🟢 Увімк';ac.dataset.state=d.ac_state?'on':'off';");
+    html += F("ac.onclick=function(){var cur=this.dataset.state==='on';fetch('/ac_output',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},");
+    html += F("body:'state='+(cur?'off':'on')}).then(()=>setTimeout(u,1000));};}}else{acC.innerHTML='';}}");
     
-    // Частина 7: Dynamic Buttons (DC)
+    // Частина 7: Dynamic Buttons (DC) - зберігаємо стан у data-атрибуті
     html += F("var dcC=document.getElementById('dcb-container');if(dcC){if(d.bluetti_connected){");
-    html += F("if(!document.getElementById('dcb')){var dcB=document.createElement('button');dcB.id='dcb';dcB.className='btn-sm';");
-    html += F("dcB.onclick=function(){fetch('/dc_output',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},");
-    html += F("body:'state='+(d.dc_state?'off':'on')}).then(()=>setTimeout(u,1000));};dcC.appendChild(dcB);}");
-    html += F("var dc=document.getElementById('dcb');if(dc)dc.textContent=d.dc_state?'🔴 Вимк':'🟢 Увімк';");
-    html += F("}else{dcC.innerHTML='';}}");
+    html += F("if(!document.getElementById('dcb')){var dcB=document.createElement('button');dcB.id='dcb';dcB.className='btn-sm';dcC.appendChild(dcB);}");
+    html += F("var dc=document.getElementById('dcb');if(dc){dc.textContent=d.dc_state?'🔴 Вимк':'🟢 Увімк';dc.dataset.state=d.dc_state?'on':'off';");
+    html += F("dc.onclick=function(){var cur=this.dataset.state==='on';fetch('/dc_output',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},");
+    html += F("body:'state='+(cur?'off':'on')}).then(()=>setTimeout(u,1000));};}}else{dcC.innerHTML='';}}");
     
-    // Частина 8: Dynamic Buttons (Charging Speed)
+    // Частина 8: Dynamic Dropdown (Charging Speed)
     html += F("var csC=document.getElementById('cs-container');if(csC){if(d.bluetti_connected){");
-    html += F("if(!document.getElementById('cs')){var csB=document.createElement('button');csB.id='cs';csB.className='btn-sm';");
-    html += F("csB.onclick=function(){var next=d.charging_speed==0?1:(d.charging_speed==1?2:0);");
-    html += F("fetch('/charging_speed',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},");
-    html += F("body:'speed='+next}).then(()=>setTimeout(u,1000));};csC.appendChild(csB);}");
-    html += F("var cs=document.getElementById('cs');if(cs)cs.textContent=d.charging_speed==0?'📊 STANDARD':(d.charging_speed==1?'🔇 SILENT':'⚡ TURBO');");
+    html += F("if(!document.getElementById('cs')){var csS=document.createElement('select');csS.id='cs';csS.className='sel';");
+    html += F("csS.innerHTML='<option value=\"0\">📊 STANDARD</option><option value=\"1\">🔇 SILENT</option><option value=\"2\">⚡ TURBO</option>';");
+    html += F("csS.onchange=function(){fetch('/charging_speed',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},");
+    html += F("body:'speed='+this.value}).then(()=>setTimeout(u,500));};csC.appendChild(csS);}");
+    html += F("var cs=document.getElementById('cs');if(cs)cs.value=d.charging_speed;");
     html += F("}else{csC.innerHTML='';}}");
     
     // Частина 9: Toggle Button
@@ -275,12 +277,16 @@ String WebServerManager::buildHtml() {
     html += F("var ecoB=document.getElementById('eco-btn'),plB=document.getElementById('pl-btn');");
     html += F("var ledS=document.getElementById('led-select'),ecsS=document.getElementById('ecs-select'),pwrB=document.getElementById('power-btn');");
     html += F("if(d.bluetti_connected){");
+    // ECO button - зберігаємо стан в data-атрибуті і читаємо його при кліку
     html += F("if(ecoB){ecoB.style.display='block';ecoB.textContent=d.eco_mode?'🌿 ECO: ON':'🌿 ECO: OFF';");
-    html += F("ecoB.onclick=function(){fetch('/eco_mode',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},");
-    html += F("body:'state='+(d.eco_mode?'off':'on')}).then(()=>setTimeout(u,1000));};}");
+    html += F("ecoB.dataset.state=d.eco_mode?'on':'off';");
+    html += F("ecoB.onclick=function(){var cur=this.dataset.state==='on';fetch('/eco_mode',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},");
+    html += F("body:'state='+(cur?'off':'on')}).then(()=>setTimeout(u,1000));};}");
+    // Power Lifting button
     html += F("if(plB){plB.style.display='block';plB.textContent=d.power_lifting?'⚡ Power Lifting: ON':'⚡ Power Lifting: OFF';");
-    html += F("plB.onclick=function(){fetch('/power_lifting',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},");
-    html += F("body:'state='+(d.power_lifting?'off':'on')}).then(()=>setTimeout(u,1000));};}");
+    html += F("plB.dataset.state=d.power_lifting?'on':'off';");
+    html += F("plB.onclick=function(){var cur=this.dataset.state==='on';fetch('/power_lifting',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},");
+    html += F("body:'state='+(cur?'off':'on')}).then(()=>setTimeout(u,1000));};}");
     html += F("if(ledS){ledS.style.display='inline-block';ledS.value=d.led_mode||4;");
     html += F("ledS.onchange=function(){fetch('/led_mode',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},");
     html += F("body:'mode='+ledS.value}).then(()=>setTimeout(u,1000));};}");
@@ -290,10 +296,18 @@ String WebServerManager::buildHtml() {
     html += F("if(pwrB)pwrB.style.display='block';");
     html += F("}else{if(ecoB)ecoB.style.display='none';if(plB)plB.style.display='none';");
     html += F("if(ledS)ledS.style.display='none';if(ecsS)ecsS.style.display='none';if(pwrB)pwrB.style.display='none';}");
-    html += F("}).catch(e=>console.error('E:',e));}setInterval(u,3000);u();</script></head>");
+    html += F("}).catch(e=>console.error('E:',e));}");
+    html += F("function startUpdates(){u();setInterval(u,3000);}");
+    html += F("if(document.readyState==='complete'||document.readyState==='interactive'){startUpdates();}else{document.addEventListener('DOMContentLoaded',startUpdates);}");
+    html += F("</script></head>");
     
     // Частина 11: HTML Body
-    html += F("<body><div class='c'><div class='card'><h1>🔋 ESP32 Monitor</h1></div>");
+    html += F("<body><div class='c'><div class='card'><h1>🔋 ESP32 Monitor</h1><div class='menu'>");
+    html += F("<a href='/'>Головна</a>");
+    html += F("<a href='/config'>Налаштування</a>");
+    html += F("<a href='/update'>Прошивка</a>");
+    html += F("<a href='/restart' onclick=\"return confirm('Перезапустити ESP32?');\">Перезапуск</a>");
+    html += F("</div></div>");
     html += F("<div class='card'><h2>📡 Система</h2><div class='g'>");
     html += F("<div class='i'><span class='l'>WiFi:</span><span class='b bs'><span id='ws'>...</span></span></div>");
     html += F("<div class='i'><span class='l'>IP:</span><span class='v' id='wi'>...</span></div>");
@@ -332,12 +346,6 @@ String WebServerManager::buildHtml() {
     html += F("<button id='power-btn' class='btn-power' style='display:none;' onclick=\"if(confirm('Вимкнути Bluetti?'))");
     html += F("fetch('/power_off',{method:'POST'}).then(()=>alert('Bluetti вимкнено'));\">🔴 Power Off</button>");
     html += F("<button id='toggleBtn' class='btn-s' onclick=\"location.href='/toggle'\">Увімкнути</button>");
-    html += F("</div>");
-    
-    html += F("<div class='card'>");
-    html += F("<button class='btn-w' onclick=\"location.href='/config'\">⚙️ Налаштування</button>");
-    html += F("<button class='btn-w' onclick=\"location.href='/update'\">📤 Прошивка</button>");
-    html += F("<button class='btn-w' onclick=\"if(confirm('Перезапустити?'))location.href='/restart'\">🔄 Перезапустити</button>");
     html += F("</div></div></body></html>");
     
     return html;

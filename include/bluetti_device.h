@@ -72,6 +72,8 @@ private:
     uint16_t lastWriteRegister = 0; // Останній записуваний регістр (для діагностики помилок)
     bool ecoWriteBlocked = false; // Якщо пристрій відхилив ECO регістр, більше не пишемо
     bool ledFallbackTried = false; // Якщо 0x0BDA відхилено, пробуємо 0x0BBA один раз
+    bool waitingForResponse = false; // Чи очікуємо відповідь від Bluetti
+    unsigned long requestStartTime = 0; // Час надсилання останнього запиту
 
     bool setupCharacteristics();
     bool sendCommand(const uint8_t* data, size_t length);
@@ -79,7 +81,6 @@ private:
     void requestRegister(uint16_t reg);
     void pollFeatureState();
     void requestStatus();
-    void requestChargingMode(); // Запит поточного режиму зарядки
     void handleNotification(uint8_t* data, size_t length);
 
     static void notificationThunk(NimBLERemoteCharacteristic* characteristic,
