@@ -20,6 +20,9 @@ include/secrets.h
 .DS_Store
 Thumbs.db
 
+# AI development notes (local only)
+.ai-notes.md
+
 # Debug and temporary documentation
 *_DEBUG.md
 *_ISSUE.md
