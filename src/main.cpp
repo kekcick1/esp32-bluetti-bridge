@@ -5,6 +5,7 @@
 #include <ArduinoOTA.h>
 #include <Preferences.h>
 #include <Update.h>
+#include <esp_wifi.h>
 
 #include "bluetti_device.h"
 #include "display_manager.h"
@@ -48,6 +49,19 @@ unsigned long apModeStartTime = 0;
 unsigned long wifiConnectStartTime = 0;
 const unsigned long WIFI_TIMEOUT_MS = 10 * 60 * 1000; // 10 хвилин
 const unsigned long AP_TIMEOUT_MS = 10 * 60 * 1000;   // 10 хвилин
+
+// Power Save - Smart polling інтервали
+const unsigned long WIFI_RETRY_FAST_MS = 3000;         // Швидкі спроби - кожні 3 секунди
+const unsigned long WIFI_RETRY_SLOW_MS = 5 * 60 * 1000; // Повільні спроби - кожні 5 хвилин
+const unsigned long BLUETTI_RETRY_FAST_MS = 10000;      // Швидкі спроби - кожні 10 секунд  
+const unsigned long BLUETTI_RETRY_SLOW_MS = 5 * 60 * 1000; // Повільні спроби - кожні 5 хвилин
+const uint8_t WIFI_FAST_ATTEMPTS = 10;    // Кількість швидких спроб перед переходом на повільний режим
+const uint8_t BLUETTI_FAST_ATTEMPTS = 6;  // Кількість швидких спроб перед переходом на повільний режим
+
+uint8_t wifiFailedAttempts = 0;    // Лічильник невдалих спроб підключення WiFi
+uint8_t bluettiFailedAttempts = 0; // Лічильник невдалих спроб підключення Bluetti
+bool wifiSlowMode = false;         // Режим повільного опитування WiFi
+bool bluettiSlowMode = false;      // Режим повільного опитування Bluetti
 
 //------------------------------------------------------------------------------
 // Читання напруги акумулятора/живлення ESP32
@@ -198,6 +212,17 @@ void connectWiFi() {
     connecting = false;
     systemStatus.wifiConnected = true;
     systemStatus.wifiIp = WiFi.localIP();
+    
+    // Скидаємо лічильник невдалих спроб та вимикаємо повільний режим
+    wifiFailedAttempts = 0;
+    wifiSlowMode = false;
+    
+    // Вмикаємо WiFi Power Save для економії енергії
+    // WIFI_PS_MAX_MODEM - максимальна економія енергії (WiFi засинає між beacon'ами)
+    // Bluetooth продовжує працювати навіть коли WiFi спить
+    esp_wifi_set_ps(WIFI_PS_MAX_MODEM);
+    Serial.println("[WiFi] Power Save enabled (MAX_MODEM)");
+    
     display.showMessage("WiFi", WiFi.localIP().toString().c_str());
     Serial.printf("WiFi connected, IP: %s\n",
                   WiFi.localIP().toString().c_str());
@@ -210,7 +235,10 @@ void connectWiFi() {
     // Таймаут 20 секунд (більше часу для підключення)
     connecting = false;
     systemStatus.wifiConnected = false;
-    Serial.printf("WiFi connection timeout (status: %d)\n", status);
+    wifiFailedAttempts++; // Збільшуємо лічильник невдалих спроб
+    
+    Serial.printf("WiFi connection timeout (status: %d, attempt %d/%d)\n", 
+                  status, wifiFailedAttempts, WIFI_FAST_ATTEMPTS);
 
     // Детальніше про помилки
     switch (status) {
@@ -229,6 +257,13 @@ void connectWiFi() {
     default:
       Serial.printf("  - Unknown status: %d\n", status);
       break;
+    }
+    
+    // Після декількох невдалих спроб переходимо на повільний режим
+    if (wifiFailedAttempts >= WIFI_FAST_ATTEMPTS && !wifiSlowMode) {
+      wifiSlowMode = true;
+      Serial.printf("[WiFi] Switching to slow polling mode (every %lu minutes)\n", 
+                    WIFI_RETRY_SLOW_MS / 60000);
     }
   }
 }
@@ -249,6 +284,12 @@ void ensureWiFi() {
     systemStatus.wifiConnected = false;
     otaReady = false;
     wifiConnectStartTime = millis(); // Скидаємо таймер
+    wifiFailedAttempts = 0; // Скидаємо лічильник при втраті з'єднання
+    wifiSlowMode = false;   // Повертаємося до швидкого режиму
+    
+    // Вимикаємо WiFi Power Save при відключенні
+    esp_wifi_set_ps(WIFI_PS_NONE);
+    
     Serial.println("WiFi lost, retrying...");
   }
 
@@ -261,9 +302,17 @@ void ensureWiFi() {
       Serial.println(
           "WiFi connection timeout (10 minutes), starting AP mode...");
       startAPMode();
-    } else if (millis() - lastWiFiAttempt > 3000) {
-      // Викликаємо connectWiFi() неблокуюче (кожні 3 секунди)
-      connectWiFi();
+    } else {
+      // Використовуємо smart polling - швидкий або повільний режим
+      unsigned long retryInterval = wifiSlowMode ? WIFI_RETRY_SLOW_MS : WIFI_RETRY_FAST_MS;
+      
+      if (millis() - lastWiFiAttempt > retryInterval) {
+        if (wifiSlowMode) {
+          Serial.println("[WiFi] Slow mode: attempting reconnection (every 5 minutes)");
+        }
+        // Викликаємо connectWiFi() неблокуюче
+        connectWiFi();
+      }
     }
   }
 }
@@ -277,19 +326,51 @@ void manageBluetti() {
   }
 
   // BLE підключення до Bluetti - ESP32 підключається напряму
-  // Агресивні спроби підключення для "витіснення" аддону "Bluetti to MQTT"
-  // Спочатку скануємо, потім підключаємося
-  if (!bluetti.isConnected() && millis() - lastBluettiAttempt > 10000) { // Зменшено інтервал до 10 секунд
-    if (strlen(bluettiMac) > 0) {
-      // ВАЖЛИВО: Викликаємо display.loop() ПЕРЕД блокуючою операцією!
-      display.loop();
-      Serial.println("[Main] Attempting to connect to Bluetti...");
-      bluetti.scanAndConnect(bluettiMac); // Спочатку скануємо, потім підключаємося
-      display.loop();
-    } else {
-      Serial.println("[Main] ⚠️  Bluetti MAC address not configured!");
+  // Smart polling: швидкі спроби (10 сек), потім повільні (5 хвилин)
+  if (!bluetti.isConnected()) {
+    // Використовуємо smart polling - швидкий або повільний режим
+    unsigned long retryInterval = bluettiSlowMode ? BLUETTI_RETRY_SLOW_MS : BLUETTI_RETRY_FAST_MS;
+    
+    if (millis() - lastBluettiAttempt > retryInterval) {
+      if (strlen(bluettiMac) > 0) {
+        if (bluettiSlowMode) {
+          Serial.println("[Bluetti] Slow mode: attempting reconnection (every 5 minutes)");
+        }
+        
+        // ВАЖЛИВО: Викликаємо display.loop() ПЕРЕД блокуючою операцією!
+        display.loop();
+        Serial.println("[Main] Attempting to connect to Bluetti...");
+        
+        bool connectStarted = bluetti.scanAndConnect(bluettiMac);
+        
+        // Якщо підключення не вдалось, збільшуємо лічильник
+        if (!connectStarted && !bluetti.isConnected()) {
+          bluettiFailedAttempts++;
+          Serial.printf("[Bluetti] Connection failed (attempt %d/%d)\n", 
+                        bluettiFailedAttempts, BLUETTI_FAST_ATTEMPTS);
+          
+          // Після декількох невдалих спроб переходимо на повільний режим
+          if (bluettiFailedAttempts >= BLUETTI_FAST_ATTEMPTS && !bluettiSlowMode) {
+            bluettiSlowMode = true;
+            Serial.printf("[Bluetti] Switching to slow polling mode (every %lu minutes)\n", 
+                          BLUETTI_RETRY_SLOW_MS / 60000);
+            Serial.println("[Bluetti] 💡 This saves power when Bluetti is OFF");
+          }
+        }
+        
+        display.loop();
+      } else {
+        Serial.println("[Main] ⚠️  Bluetti MAC address not configured!");
+      }
+      lastBluettiAttempt = millis();
     }
-    lastBluettiAttempt = millis();
+  } else {
+    // Bluetti підключений - скидаємо лічильники
+    if (bluettiFailedAttempts > 0 || bluettiSlowMode) {
+      bluettiFailedAttempts = 0;
+      bluettiSlowMode = false;
+      Serial.println("[Bluetti] Connected, reset to fast polling mode");
+    }
   }
   
   // Також обробляємо сканування, якщо воно активне
@@ -441,6 +522,7 @@ void setup() {
   delay(500);
   Serial.println();
   Serial.println("=== ESP32 Bluetti Bridge ===");
+  Serial.println("=== Power Save Mode Enabled ===");
 
   analogReadResolution(12);
   systemStatus.esp32Voltage = readEsp32Voltage();
@@ -458,6 +540,22 @@ void setup() {
   
   // Налаштовуємо MQTT з username та password
   mqtt.configure(mqttServer, MQTT_PORT, MQTT_USER, MQTT_PASSWORD);
+
+  // Ініціалізуємо WiFi Power Save
+  // ПРИМІТКА: WiFi Power Save буде увімкнено автоматично при підключенні
+  // CONFIG_ESP_WIFI_STA_DISCONNECTED_PM_ENABLE вже встановлено в platformio.ini
+  Serial.println("[WiFi] Power Save configuration:");
+  Serial.println("  - Disconnected PM: ENABLED (from platformio.ini)");
+  Serial.println("  - Connected PS: WIFI_PS_MAX_MODEM (will be set on connection)");
+  Serial.println("  - BLE Coexistence: ENABLED");
+  Serial.println("[WiFi] Smart polling:");
+  Serial.printf("  - Fast retry: every %lu seconds\n", WIFI_RETRY_FAST_MS / 1000);
+  Serial.printf("  - Slow retry: every %lu minutes (after %d failed attempts)\n", 
+                WIFI_RETRY_SLOW_MS / 60000, WIFI_FAST_ATTEMPTS);
+  Serial.println("[Bluetti] Smart polling:");
+  Serial.printf("  - Fast retry: every %lu seconds\n", BLUETTI_RETRY_FAST_MS / 1000);
+  Serial.printf("  - Slow retry: every %lu minutes (after %d failed attempts)\n", 
+                BLUETTI_RETRY_SLOW_MS / 60000, BLUETTI_FAST_ATTEMPTS);
 
   wifiConnectStartTime = millis();
   connectWiFi();

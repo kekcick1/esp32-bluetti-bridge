@@ -33,14 +33,19 @@ BluettiDevice::BluettiDevice(SystemStatus *sharedStatus)
 bool BluettiDevice::begin() {
   Serial.println("[Bluetti] Initializing BLE...");
   NimBLEDevice::init("ESP32-BLUETTI");
+  
+  // Встановлюємо TX power для BLE
+  // ESP_PWR_LVL_P3 = +3dBm (помірний рівень, добрий баланс між дальністю та енергією)
+  // Для WiFi coexistence краще використовувати помірний рівень
   NimBLEDevice::setPower(ESP_PWR_LVL_P3);
+  Serial.println("[Bluetti] BLE TX Power set to +3dBm (balanced for WiFi coexistence)");
   
   // Не видаляємо bonding - EB3A потребує збереження bonding для стабільного з'єднання
   // NimBLEDevice::deleteAllBonds();
   // delay(100);
   Serial.println("[Bluetti] Keeping existing bonds for EB3A compatibility");
   
-  Serial.println("[Bluetti] BLE initialized");
+  Serial.println("[Bluetti] BLE initialized with WiFi coexistence support");
   Serial.println("[Bluetti] ⚠️  IMPORTANT: Bluetti allows only ONE BLE connection at a time!");
   Serial.println("[Bluetti] ⚠️  Make sure:");
   Serial.println("[Bluetti]     1. 'Bluetti to MQTT' addon is STOPPED in Home Assistant");
