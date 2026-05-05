@@ -515,6 +515,10 @@ void MQTTHandler::onMessage(char *topic, byte *payload, unsigned int length) {
     bool ok = bluetti->setACOutput(message == "ON");
     Serial.printf("[MQTT] AC Output command: %s\n", message.c_str());
     if (ok) publishStatus();
+  } else if (strcmp(topic, "homeassistant/bluetti/eb3a/dc_output/set") == 0) {
+    bool ok = bluetti->setDCOutput(message == "ON");
+    Serial.printf("[MQTT] DC Output command: %s\n", message.c_str());
+    if (ok) publishStatus();
   } else if (strcmp(topic, "homeassistant/bluetti/eb3a/charging_speed/set") == 0) {
     uint8_t speed = 0; // Standard
     if (message == "Silent" || message == "silent" || message == "1") {
